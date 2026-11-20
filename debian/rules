@@ -1,0 +1,94 @@
+#!/usr/bin/make -f
+# Standalone packaging for the pinned upstream nekobox release.
+#
+# Go parts are built offline from the vendor/ tree shipped in the release
+# tarball: the proxy and checksum database are disabled and the local
+# toolchain is used as-is. Both the GUI and the core executable must be
+# produced and installed, otherwise the build fails.
+#
+# Use the release's vendored modules without resolving or downloading modules.
+
+export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+# Debian's Go 1.26 toolchain; also used explicitly for CMake's three find_program
+# lookups so the build cannot silently pick another Go.
+GO_BIN := /usr/lib/go-1.26/bin/go
+export PATH := /usr/lib/go-1.26/bin:$(PATH)
+
+export GOOS = linux
+export GOARCH = amd64
+export CGO_ENABLED = 1
+export GOTOOLCHAIN = local
+export GOPROXY = off
+export GOSUMDB = off
+export GOPATH = $(CURDIR)/debian/.gopath
+export GOCACHE = $(CURDIR)/debian/.gocache
+
+UPSTREAM_VERSION := $(shell dpkg-parsechangelog -SVersion | cut -d- -f1)
+
+GO_MOD_TIDY = OFF
+GO_MOD_VENDOR = ON
+
+GO_CMAKE_FLAGS = \
+	-DGO_EXECUTABLE=$(GO_BIN) \
+	-DGO_COMPILER=$(GO_BIN) \
+	-DGOCMD=$(GO_BIN)
+
+DEB_CMAKE_FLAGS = \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DCMAKE_INSTALL_PREFIX=/usr \
+	-DCMAKE_INSTALL_LIBEXECDIR=libexec \
+	-DNKR_DEFAULT_VERSION=$(UPSTREAM_VERSION) \
+	-DSKIP_UPDATER=ON \
+	-DBUILD_GO_PARTS=ON \
+	-DGOOS=linux \
+	-DGOARCH=amd64 \
+	-DPROGRAMPREFIX=/usr/libexec/Iblis \
+	-DGO_MOD_TIDY=$(GO_MOD_TIDY) \
+	-DGO_MOD_VENDOR=$(GO_MOD_VENDOR) \
+	-DCMAKE_DISABLE_FIND_PACKAGE_cpr=ON \
+	-DCPR_USE_SYSTEM_CURL=ON \
+	$(GO_CMAKE_FLAGS)
+
+EXECUTABLES = nekobox nekobox_core
+INSTALL_DIR = debian/nekobox/usr/libexec/Iblis
+
+%:
+	dh $@ --buildsystem=cmake
+
+override_dh_auto_configure:
+	dh_auto_configure -- $(DEB_CMAKE_FLAGS)
+
+override_dh_auto_build:
+	dh_auto_build
+	@set -e; for exe in $(EXECUTABLES); do \
+		found=$$(find $(CURDIR) -maxdepth 2 -path "*/obj-*/$$exe" -type f -perm -0100 | head -n 1); \
+		if [ -z "$$found" ]; then \
+			echo "E: $$exe was not built; refusing to package an incomplete build" >&2; \
+			exit 1; \
+		fi; \
+		echo "I: built $$found"; \
+	done
+
+override_dh_auto_test:
+	@echo "I: no upstream test suite is wired into CMake; the GUI needs a display"
+
+override_dh_auto_install:
+	dh_auto_install --destdir=debian/nekobox
+	# Upstream installs a /usr/bin/sing-box wrapper. Drop it: it would conflict
+	# with a standalone sing-box package and the GUI calls the core directly.
+	rm -f debian/nekobox/usr/bin/sing-box
+	@set -e; for exe in $(EXECUTABLES); do \
+		if [ ! -x "$(INSTALL_DIR)/$$exe" ]; then \
+			echo "E: $(INSTALL_DIR)/$$exe missing after install" >&2; \
+			exit 1; \
+		fi; \
+		echo "I: installed $(INSTALL_DIR)/$$exe"; \
+	done
+	@test -x debian/nekobox/usr/bin/nekobox \
+		|| { echo "E: debian/nekobox/usr/bin/nekobox launcher missing" >&2; exit 1; }
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -rf debian/.gocache debian/.gopath

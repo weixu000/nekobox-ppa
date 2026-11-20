@@ -1,0 +1,27 @@
+Bundled third-party licences and notices
+========================================
+
+This directory is installed as /usr/share/doc/nekobox/third-party/.
+
+  INDEX.txt           every copied file, its source path in the upstream
+                      tarball and its sha256
+  generated/go/       licence/notice files of the modules in
+                      core/server/vendor/modules.txt, copied verbatim
+  generated/cpp/      licence files shipped for bundled C/C++ components
+  generated/inline/   leading copyright/licence comments of bundled files
+                      that have no separate licence file, copied verbatim
+  upstream/           licence texts that the upstream tarball does not ship,
+                      plus PROVENANCE.txt with the project, retrieval date
+                      and hash evidence
+
+Regenerate generated/ and INDEX.txt from an extracted upstream tree with:
+
+    scripts/collect-notices.py --source build/nekobox-<version>
+    scripts/collect-notices.py --source build/nekobox-<version> --check
+
+The collector never writes upstream/.  If a component changes, update its
+entry in scripts/collect-notices.py and the evidence in
+upstream/PROVENANCE.txt by hand, then regenerate.  Read debian/copyright for
+the mapping from components to licences; unresolved items are listed there
+instead of being guessed.  dh_compress may gzip the larger files, so refer
+to directories rather than assuming an uncompressed suffix.

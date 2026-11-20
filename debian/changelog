@@ -1,0 +1,13 @@
+nekobox (5.11.28.3-2~ppa1) resolute; urgency=medium
+
+  * Independent packaging for a personal Launchpad PPA, built from the pinned
+    upstream 5.11.28.3 unified-source release tarball rather than from another
+    PPA's packaging history.
+  * Ship the GUI and the sing-box based core in one binary package, installed
+    under /usr/libexec/Iblis so both always match.
+  * Do not install upstream's /usr/bin/sing-box wrapper, which would conflict
+    with a standalone sing-box package.
+  * Build the Go parts offline from the vendored dependencies shipped in the
+    release tarball (GOPROXY=off, GOSUMDB=off, GOTOOLCHAIN=local).
+
+ -- Oblivion W <oblivion.w23@gmail.com>  Fri, 20 Nov 2026 20:56:07 +0800

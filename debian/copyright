@@ -1,0 +1,367 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: nekobox
+Source: https://github.com/qr243vbi/nekobox
+Comment: Scope and evidence.
+ .
+ This file covers the material that is compiled into the two programs in
+ the binary package (the Qt GUI nekobox and the Go core nekobox_core) and
+ the third-party material that those programs embed. It is not a full
+ audit of every file in the source tarball.
+ .
+ Licence and notice files that upstream ships are copied verbatim by
+ scripts/collect-notices.py into debian/third-party/ and installed under
+ /usr/share/doc/nekobox/third-party/. INDEX.txt maps every copied file to
+ its source path and sha256. Inline notices that have no separate file are
+ copied to the same place under generated/inline/.
+ .
+ The release tarball does not ship a licence file for a few components.
+ For those, debian/third-party/upstream/PROVENANCE.txt records the project,
+ the retrieval date and, where possible, a byte-for-byte match between the
+ vendored source and the upstream file. Files whose origin could not be
+ established are marked "unresolved" below rather than guessed.
+ .
+ dh_compress gzip-compresses files under /usr/share/doc that are larger
+ than 4 KiB, so a text named below as ".../LICENSE" may be installed as
+ ".../LICENSE.gz". INDEX.txt records the uncompressed names.
+ .
+ Parts of the source tarball that this recipe does not compile are not
+ itemised here: core/updater/ (SKIP_UPDATER=ON; no updater executable is
+ installed), src/3rdparty/lmdbxx/ (MIGRATE_LMDB=OFF) and the test suites
+ (except cpr/test, noted below because its licence differs from cpr's root
+ licence). They are not in the binary package.
+ .
+ The Go runtime and standard library are statically linked into
+ nekobox_core by the golang-1.26-go build dependency. Their source is not
+ part of the upstream tarball and is not copied here; on the build system
+ see /usr/share/doc/golang-1.26-go/copyright (BSD-3-clause, Copyright
+ 2009 The Go Authors).
+ .
+ The GUI links system libraries dynamically (Qt6, Boost, OpenSSL, curl,
+ leveldb, thrift, yaml-cpp, snappy, acl, X11/XCB). They are not bundled and
+ are covered by their own Debian packages.
+ .
+ res/fonts/NotoEmoji.ttf and res/fonts/TwemojiCOLR.ttf are present in the
+ source tree but are NOT embedded in this build: on non-Windows CMake sets
+ ENABLE_EMOJI_EMBEEDING=OFF, and the GUI binary contains only the fallback
+ path strings, not the font data. Their licences are therefore not part of
+ the binary package. See upstream/PROVENANCE.txt before enabling that
+ option.
+
+Files: *
+Copyright: NekoBox contributors
+License: GPL-3
+
+Files: debian/*
+Copyright: 2026 Oblivion W <oblivion.w23@gmail.com>
+License: GPL-3
+Comment: The packaging is distributed under the same licence as upstream.
+
+Files: debian/third-party/*
+Copyright: the respective upstream authors, as stated in each copied file
+License: per-module
+Comment: Verbatim copies of third-party licence, copyright and notice texts.
+ They are not relicensed by this packaging. The mapping to the source path
+ and sha256 is in debian/third-party/INDEX.txt.
+
+Files: debian/third-party/README
+       debian/third-party/INDEX.txt
+       debian/third-party/upstream/PROVENANCE.txt
+Copyright: 2026 Oblivion W <oblivion.w23@gmail.com>
+License: GPL-3
+Comment: Packaging documentation about the copied texts, not a copied text.
+
+Files: core/server/vendor/*
+Copyright: the respective module authors, as stated in each module's licence files
+License: per-module
+Comment: The complete licence and notice files of every module in the
+ vendored build set are installed as
+ /usr/share/doc/nekobox/third-party/generated/go/<module>/ and indexed in
+ INDEX.txt. They are copied verbatim, not summarised or relicensed here.
+ .
+ The set comes from core/server/vendor/modules.txt. It is a superset of the
+ modules actually linked into the amd64 core binary (for example,
+ Windows-only modules are vendored but not linked), so some copied licences
+ belong to modules that contribute no code to this binary. The 112 modules
+ reported as dependencies by the built core all have at least one copied
+ licence file; the copies are kept for the whole vendor set so that the
+ inventory can be regenerated from the source tree alone.
+
+Files: src/3rdparty/cpr/*
+Copyright: 2017-2021 Huu Nguyen; 2022 libcpr and many other contributors
+License: MIT
+Comment: Bundled cpr is always used (CMAKE_DISABLE_FIND_PACKAGE_cpr=ON) and
+ is statically linked into the GUI; libcurl itself is a system library.
+ Complete text: /usr/share/doc/nekobox/third-party/generated/cpp/cpr/LICENSE.
+
+Files: src/3rdparty/cpr/test/*
+Copyright: libcpr contributors
+License: GPL-3
+Comment: cpr's test/LICENSE states that GPL-3 applies to that directory.
+ These files are not compiled into the binary.
+
+Files: src/3rdparty/qjs/*
+Copyright: 2017-2026 Fabrice Bellard; 2017-2024 Charlie Gordon; 2023-2026 Ben Noordhuis; 2023-2026 Saul Ibarra Corretge
+License: MIT
+Comment: quickjs-ng, statically linked into the GUI.
+ Complete text: /usr/share/doc/nekobox/third-party/generated/cpp/qjs/LICENSE.
+
+Files: src/3rdparty/quirc/*
+Copyright: 2010-2012 Daniel Beer <dlbeer@gmail.com>
+License: ISC
+Comment: The release tarball ships no separate licence file. The notice at
+ the top of each compiled source file is copied to
+ /usr/share/doc/nekobox/third-party/generated/inline/quirc/.
+
+Files: src/3rdparty/qrcodegen/*
+Copyright: Project Nayuki
+License: MIT
+Comment: The release tarball ships no separate licence file. The MIT notice
+ at the top of each compiled source file is copied to
+ /usr/share/doc/nekobox/third-party/generated/inline/qrcodegen/.
+
+Files: src/3rdparty/QHotkey/*
+Copyright: 2016 Felix Barz
+License: BSD-3-clause
+Comment: The release tarball ships no licence file for QHotkey. The text
+ was retrieved from the upstream project
+ (https://github.com/qr243vbi/QHotkey) and the vendored qhotkey.h is
+ byte-identical to that project's QHotkey/qhotkey.h; the hash is recorded
+ in /usr/share/doc/nekobox/third-party/upstream/PROVENANCE.txt, and the
+ licence text is in upstream/QHotkey/LICENSE.
+
+Files: src/3rdparty/ini/*
+Copyright: the iniqt.hpp authors; the shipped header contains no copyright notice
+License: GPL-3
+Comment: Vendored from https://github.com/qr243vbi/iniqt.hpp, which declares
+ GPL-3.0; the vendored ini.h is byte-identical to upstream main/iniqt.hpp
+ (hash in upstream/PROVENANCE.txt). The header itself has no licence
+ statement, so the repository declaration plus the file match are the
+ evidence. GPL-3 text: /usr/share/common-licenses/GPL-3.
+
+Files: src/3rdparty/URLParser/*
+Copyright: 2017 DONGBUM, KIM
+License: MIT
+Comment: The release tarball ships no licence file. Both vendored headers
+ are byte-identical to the upstream project's files; the MIT text is in
+ upstream/URLParser/LICENSE and the hashes are in upstream/PROVENANCE.txt.
+
+Files: src/3rdparty/LRUCache/*
+Copyright: 2012-22 Saurav Mohapatra <mohaps@gmail.com>
+License: ISC
+Comment: The release tarball ships no separate licence file. The notice in
+ LRUCache11.hpp is copied to
+ /usr/share/doc/nekobox/third-party/generated/inline/LRUCache/.
+
+Files: src/3rdparty/qv2ray/*
+Copyright: Qv2ray contributors; individual notices where present
+License: GPL-3
+Comment: Files copied from Qv2ray (https://github.com/Qv2ray/Qv2ray), whose
+ repository declares GPL-3.0. The copied files without their own header are
+ covered by that project licence; they were not audited file by file and
+ the exact upstream revision is not recorded. QvProxyConfigurator.cpp is not
+ compiled: USE_CPP_PROXY_CONFIGURATOR is undefined, so its body is empty.
+
+Files: src/3rdparty/qv2ray/v2/ui/LogHighlighter.hpp
+       src/3rdparty/qv2ray/v2/ui/QvAutoCompleteTextEdit.cpp
+       src/3rdparty/qv2ray/v2/ui/QvAutoCompleteTextEdit.hpp
+Copyright: 2016 The Qt Company Ltd.
+License: BSD-3-clause
+Comment: The full Qt BSD notice is copied to
+ /usr/share/doc/nekobox/third-party/generated/inline/qv2ray/.
+
+Files: src/3rdparty/qv2ray/v2/ui/widgets/common/QJsonModel.cpp
+       src/3rdparty/qv2ray/v2/ui/widgets/common/QJsonModel.hpp
+Copyright: 2011 SCHUTZ Sacha
+License: MIT
+Comment: The MIT notice is copied to
+ /usr/share/doc/nekobox/third-party/generated/inline/qv2ray/.
+
+Files: src/3rdparty/qv2ray/v2/ui/widgets/speedchart/SpeedWidget.cpp
+       src/3rdparty/qv2ray/v2/ui/widgets/speedchart/SpeedWidget.hpp
+Copyright: 2015 Anton Lashkov <lenton_91@mail.ru>
+License: GPL-3+
+Comment: The GPL notice is copied to
+ /usr/share/doc/nekobox/third-party/generated/inline/qv2ray/.
+
+Files: src/gharqad/sys/AutoRun.cpp
+Copyright: NekoBox contributors
+License: GPL-3
+Comment: The file contains an attributed snippet headed "launchatlogin.cpp
+ / ShadowClash / Copyright (c) 2019 Coel Wu" and a comment referring to
+ nextcloud/desktop utility_unix.cpp. The notice is preserved verbatim in
+ generated/inline/nekobox/. The licence of those portions is not stated in
+ the file; it is recorded as unresolved in upstream/PROVENANCE.txt and is
+ not asserted here. The rest of the file follows the package licence.
+
+Files: res/qss/AMOLED.qss
+Copyright: Jaime A. Quiroga P. (GTRONICK)
+License: MIT
+Comment: The shipped file keeps the GTRONICK header but its body was
+ rewritten by NekoBox and differs from the current GTRONICK file. The
+ GTRONICK/QSS project declares MIT; text in upstream/GTRONICK-QSS/LICENSE.
+ The exact upstream revision is not recorded.
+
+Files: res/qss/MaterialDark.qss
+Copyright: 2016 Marcus Ottosson
+License: MIT
+Comment: The file begins with "/* Avalon stylesheet */". Its content matches
+ getavalon/core avalon/style/style.qss (branch master) except for 21 diff
+ lines at retrieval. MIT text in upstream/Avalon/LICENSE. The exact upstream
+ revision is not recorded.
+
+Files: res/qss/Aqua.qss
+Copyright: Ktiseos-Nyx/qss_themes contributors (no copyright notice shipped)
+License: unresolved
+Comment: Byte-identical to
+ themes/AESTHETICS_INSPIRED/Metro_Ocean.qss from
+ https://github.com/Ktiseos-Nyx/qss_themes at retrieval (sha256 in
+ upstream/PROVENANCE.txt). That repository declared no licence at
+ retrieval. No licence is asserted here.
+
+Files: res/qss/Kawaii.qss
+Copyright: Ktiseos-Nyx/qss_themes contributors (no copyright notice shipped)
+License: unresolved
+Comment: A modified copy of themes/FOOD_INSPIRED/sweet_treats_kawaii.qss
+ from https://github.com/Ktiseos-Nyx/qss_themes (70 diff lines at
+ retrieval; hash in upstream/PROVENANCE.txt). That repository declared no
+ licence at retrieval. No licence is asserted here.
+
+Files: res/qss/feiyangqingyun/*
+Copyright: unknown; no copyright notice is shipped
+License: unresolved
+Comment: One icon, qss/blacksoft/arrow_bottom.png, is byte-identical to
+ ui/core_qss/qss/blacksoft/arrow_bottom.png in
+ https://github.com/feiyangqingyun/QWidgetDemo, which declares the Mulan
+ PSL v1 (text in upstream/QWidgetDemo/LICENSE). The three .qss files are
+ "Breeze Light - QSS approximation" rewrites that do not match QWidgetDemo,
+ and the other checked icons did not match. The provenance of the remaining
+ files is not established; no licence is asserted for them.
+
+Files: res/rc/*
+Copyright: unknown; no attribution is shipped
+License: unresolved
+Comment: These Qt stylesheet example images (stylesheet-vline.png,
+ branch_closed.png, checkbox_checked.png, ...) are embedded through
+ res/darkstyle.qrc. No source, revision or licence text is shipped with
+ them. The Qt example code copied elsewhere in this tree is BSD-3-clause,
+ but that is not treated as evidence for the images. No licence is asserted.
+
+Files: res/icon/*.png
+Copyright: unknown; no attribution is shipped
+License: unresolved
+Comment: These button icons have no source, revision or licence metadata in
+ the tarball. Some names (internet-web-browser, preferences, system-run)
+ are common desktop-theme names and the material/ subset uses Material
+ Design icon names, but that is not evidence of the exact origin. No licence
+ is asserted for them.
+
+Files: res/icon/material/*
+Copyright: unknown; no attribution is shipped
+License: unresolved
+Comment: The file names are Material Design icon names, but no source,
+ revision or licence statement is shipped with these PNGs. The origin is not
+ established; no licence is asserted here.
+
+License: GPL-3
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the Free
+ Software Foundation, version 3.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ more details.
+ .
+ On Debian systems the complete text of the GNU General Public License
+ version 3 is available in /usr/share/common-licenses/GPL-3. The upstream
+ copy is installed as /usr/share/doc/nekobox/LICENSE.gz.
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the Free
+ Software Foundation, either version 3 of the License, or (at your option)
+ any later version.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ more details.
+ .
+ On Debian systems the complete text of the GNU General Public License
+ version 3 is available in /usr/share/common-licenses/GPL-3.
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to
+ deal in the Software without restriction, including without limitation the
+ rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ sell copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ DEALINGS IN THE SOFTWARE.
+
+License: ISC
+ Permission to use, copy, modify, and/or distribute this software for any
+ purpose with or without fee is hereby granted, provided that the above
+ copyright notice and this permission notice appear in all copies.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+ SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+License: BSD-3-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+ .
+ 1. Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+ .
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ .
+ 3. Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ POSSIBILITY OF SUCH DAMAGE.
+ .
+ The exact upstream wording for QHotkey is in
+ /usr/share/doc/nekobox/third-party/upstream/QHotkey/LICENSE.
+
+License: per-module
+ The files under debian/third-party/ (generated/go/, generated/cpp/,
+ generated/inline/ and upstream/) are verbatim copies of third-party
+ licence and notice material. This packaging does not relicense them.
+ Each component's own terms apply; they differ per component (MIT,
+ BSD-2-clause, BSD-3-clause, ISC, Apache-2.0, MPL-2.0, GPL-3 and others).
+ The copied file is authoritative and this stanza deliberately does not
+ summarise or replace it.
+
+License: unresolved
+ No licence text is available in the upstream release or at the project the
+ file appears to come from. This is recorded as an open question; no licence
+ is asserted.

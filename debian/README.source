@@ -1,0 +1,51 @@
+Source provenance
+=================
+
+This packaging is built from one pinned upstream release, not from another
+PPA's packaging or git history. The URL, file name and sha256 are in
+../upstream.env and are verified by ../scripts/prepare-source.sh.
+
+reference/ (an ignored clone of an existing PPA repository) is kept for
+comparison only and is never used as build input.
+
+Orig tarball
+------------
+
+Upstream publishes nekobox-unified-source-<version>.tar.xz whose top-level
+directory is nekobox-unified-source-<version>. dpkg-source's canonical layout
+is nekobox-<version>/, but dpkg-source -b and -x accept the upstream name
+(they rename on extraction), so prepare-source.sh keeps the upstream bytes
+unchanged: their sha256 is the one in ../upstream.env. Run it with --repack to
+force the canonical top-level name (same file contents: sorted names, fixed
+mtime 2026-08-26T18:54:32Z, root ownership, xz -6 single-threaded) if a
+service ever rejects the upstream layout.
+
+Build dependencies
+------------------
+
+The list in debian/control is derived from the CMake files and the bundled
+code in the release tarball. Relative to upstream's Void Linux and container
+lists, libboost-all-dev is narrowed to libboost-filesystem-dev (only
+Boost::filesystem is linked) and these are not used: qt6-declarative-dev (no
+QML/Quick sources), liblmdb-dev (MIGRATE_LMDB is off), libunistring-dev and
+libzstd-dev (no cgo link flags reference them; zstd is used through
+Go packages). libx11-dev and libxcb1-dev are required by the bundled QHotkey.
+qt6-l10n-tools supplies lrelease/lupdate for qt_add_lrelease; qt6-tools-dev and
+qt6-base-dev-tools provide the Qt CMake packages and moc/uic. thrift-compiler
+generates the C++ RPC stubs at configure time and is not patched. The bundled
+cpr is always used (CMAKE_DISABLE_FIND_PACKAGE_cpr=ON) against the system
+libcurl headers, so no system cpr package is needed.
+
+The package is declared Architecture: amd64 because the recipe pins
+GOARCH=amd64; do not enable other Launchpad architectures without making the
+Go arch follow DEB_HOST_ARCH.
+
+Go build
+--------
+
+The release tarball carries core/server/vendor/, so the core is built without
+network access: GOPROXY=off, GOSUMDB=off, GOTOOLCHAIN=local. CMake's
+GO_EXECUTABLE, GO_COMPILER and GOCMD are pinned to /usr/lib/go-1.26/bin/go.
+debian/rules builds in vendor mode (GO_MOD_TIDY=OFF, GO_MOD_VENDOR=ON): no
+`go mod tidy` or `go mod vendor` runs, and every build uses only the modules
+already vendored in the tarball.

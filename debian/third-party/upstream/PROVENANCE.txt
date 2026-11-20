@@ -1,0 +1,140 @@
+Provenance of the licence texts in this directory
+=================================================
+
+The pinned upstream release tarball (see upstream.env in the source package)
+does not ship a licence file for every third-party component that is
+compiled into the binary package.  The files below were retrieved from the project named
+for each entry on 2026-11-20.  Where possible the vendored source file was
+compared byte-for-byte with the upstream file at the same revision; the
+sha256 values make that comparison repeatable.  Nothing here was inferred
+from a file name alone.
+
+QHotkey
+-------
+Project : https://github.com/qr243vbi/QHotkey (fork of Skycoder42/QHotkey)
+License : BSD-3-Clause, Copyright (c) 2016, Felix Barz
+File    : upstream/QHotkey/LICENSE
+Evidence: src/3rdparty/QHotkey/QHotkey/qhotkey.h in the tarball is
+          byte-identical to QHotkey/qhotkey.h on branch master:
+          b01f54525873685458539e704c71ab21811386b98ebb34b90db122c5d5d87166
+          Pinned: qhotkey.h last changed in commit
+          6c0e98492c59206139f8490706aadeb8ed033057 (2025-07-06),
+          LICENSE last changed in commit
+          4fa20f9e2d3d195770967c931dd4d7bdab75647e (2016-02-05).
+          The tarball itself carries no licence or notice file for QHotkey.
+Note    : debian/copyright has the governing stanza.
+
+URLParser
+---------
+Project : https://github.com/dongbum/URLParser
+License : MIT, Copyright (c) 2017 DONGBUM, KIM
+File    : upstream/URLParser/LICENSE
+Evidence: both vendored headers are byte-identical to branch master:
+          src/3rdparty/URLParser/url_parser.h
+            55de5e00c16c77068566dd33cdd2f71bfb549a4ecdc7ceee27bf75a46c6fb5ad
+          src/3rdparty/URLParser/url_parser_function.h
+            447f4c8cf9aa3701c43fc4a501a134aa8da954e9d9594a306b284e78bc291b5c
+          Pinned: url_parser.h last changed in commit
+          c14657b9602e33bc0812b606b2641cd6ebcf4ef4 (2026-04-03).
+          The headers themselves carry no licence statement.
+
+iniqt.hpp (vendored as src/3rdparty/ini/ini.h)
+----------------------------------------------
+Project : https://github.com/qr243vbi/iniqt.hpp
+License : GPL-3.0 (the repository declares GPL-3.0; no copyright notice is
+          present in the vendored header)
+Evidence: src/3rdparty/ini/ini.h is byte-identical to main/iniqt.hpp:
+          d257ac2eb6e56975417afda7afa3117c0ef38df3042bb01889ef0b6f460f38ee
+          Pinned: iniqt.hpp last changed in commit
+          9ca09d1fa4b3d2897d9de0a70b389d9290d63a75 (2026-05-31).
+Note    : GPL-3 text is not duplicated here; /usr/share/common-licenses/GPL-3
+          is the same licence and debian/copyright refers to it.
+
+Qv2ray (files copied under src/3rdparty/qv2ray/)
+-------------------------------------------------
+Project : https://github.com/Qv2ray/Qv2ray
+License : GPL-3.0 for the project.  Individual copied files carry their own
+          notices: Qt Company BSD-3-Clause (LogHighlighter.hpp,
+          QvAutoCompleteTextEdit.*), MIT (QJsonModel.*, Copyright 2011
+          SCHUTZ Sacha) and GPL-3+ (SpeedWidget.*, Copyright 2015 Anton
+          Lashkov).  The remaining copied files have no header.
+Note    : The tarball carries no Qv2ray licence file.  No Qv2ray source file
+          was hash-matched to an upstream revision, so the exact upstream
+          revision is not recorded.  The inline notices are reproduced under
+          generated/inline/qv2ray/.
+
+Themes and icons used by the GUI
+--------------------------------
+No separate licence file is shipped with any res/qss or res/icon file.
+
+Avalon / MaterialDark.qss
+  The shipped file begins with "/* Avalon stylesheet */".  Its content
+  matches getavalon/core:avalon/style/style.qss (branch master) except for
+  21 diff lines out of ~24 KiB at retrieval.  getavalon/core declares MIT
+  (Copyright (c) 2016 Marcus Ottosson); text in upstream/Avalon/LICENSE.
+  The upstream file last changed in commit
+  395321881c320eea2919503b8f8e12eb97335d99 (2020-02-21).  The shipped
+  file is a modified copy; the exact upstream revision is not recorded.
+
+GTRONICK / AMOLED.qss
+  The shipped file retains the upstream header naming Jaime A. Quiroga P.
+  and https://github.com/GTRONICK/QSS.  GTRONICK/QSS declares MIT
+  (Copyright (c) 2018 Jaime Quiroga); text in upstream/GTRONICK-QSS/LICENSE.
+  The body has been rewritten by NekoBox and differs from the current
+  GTRONICK file (current upstream last changed in commit
+  5c90093aa3eb7ab8a90ba5061115d6ca06b0e011, 2026-10-17; the shipped header
+  says 2021-10-01), so the exact upstream revision is not recorded.
+
+Ktiseos-Nyx / Aqua.qss and Kawaii.qss
+  Aqua.qss is byte-identical to
+    themes/AESTHETICS_INSPIRED/Metro_Ocean.qss
+  from https://github.com/Ktiseos-Nyx/qss_themes (branch master):
+    9ddaae9a97e397dc54f3f45f9c9ced16d877c443c187e3c4cb3c30b35c730b0a
+  Kawaii.qss is a modified copy of
+    themes/FOOD_INSPIRED/sweet_treats_kawaii.qss
+  from the same repository (upstream 5499 bytes, sha256
+  8183f122e1d175d1ec347484760648c360c4518d4731b4ae55f6259f0631473b;
+  shipped 6517 bytes, 70 diff lines).  Both upstream theme files last
+  changed in commit 8d783b8d584be033d9a3ce6fe58aeb7b8a96ba7c (2025-07-13).
+  At retrieval the repository declared no licence (GitHub API: no licence
+  detected).  This is an unresolved licensing question, not a conclusion
+  that the files are unlicensed; it is recorded as such in debian/copyright.
+
+feiyangqingyun / res/qss/feiyangqingyun/
+  The directory name points at https://github.com/feiyangqingyun/QWidgetDemo
+  and one icon was hash-matched: the shipped
+  qss/blacksoft/arrow_bottom.png is byte-identical to
+  ui/core_qss/qss/blacksoft/arrow_bottom.png (sha256
+  77e5b4bb346c0c0f00218c142fce47ada932a2d293bf05795d4f3482cd1a3058),
+  last changed upstream in commit
+  2c90b59c316c22c996bab7a7b278d2eb6010068b (2021-12-15).
+  QWidgetDemo declares the Mulan PSL v1; text in upstream/QWidgetDemo/LICENSE.
+  The three .qss files do not match QWidgetDemo's stylesheets (they are
+  "Breeze Light - QSS approximation" rewrites), and the other checked icons
+  did not match.  Provenance of the remaining files is unresolved.
+
+res/icon/material/*.png
+  The names (delete.png, lock-outline.png, swap-horizontal.png, ...) are
+  Material Design icon names, but no source, revision or licence statement
+  is shipped with them.  Their exact origin is unresolved; no licence is
+  asserted here.
+
+res/icon/*.png and res/rc/*.png
+  No licence or attribution is shipped for these PNGs either.  The names in
+  res/rc (stylesheet-vline.png, branch_closed.png, ...) and the darkstyle.qrc
+  that embeds them point at the Qt stylesheet example, whose code in this
+  tree is BSD-3-clause (see the qv2ray Qt notices), but that is not evidence
+  for the image files.  No licence is asserted for them.
+
+Fonts
+-----
+res/fonts/NotoEmoji.ttf and res/fonts/TwemojiCOLR.ttf are NOT embedded in
+this build: CMake sets ENABLE_EMOJI_EMBEEDING=OFF when not WIN32, no
+qrc_fonts object is generated, and the GUI binary contains only the
+fallback path strings ":/fonts/TwemojiCOLR.ttf" / ":/fonts/NotoEmoji.ttf",
+not the font data (the fonts' name-table strings are absent).  Their
+licences are therefore not part of the binary package.  Do not add them
+without evidence if that option is ever enabled.  For reference: the
+NotoEmoji.ttf name table says "Copyright 2013 Google LLC" and points to
+http://scripts.sil.org/OFL; TwemojiCOLR.ttf carries no copyright or licence
+name record.

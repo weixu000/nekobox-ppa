@@ -1,0 +1,43 @@
+Source: nekobox
+Section: net
+Priority: optional
+Maintainer: Oblivion W <oblivion.w23@gmail.com>
+Build-Depends: build-essential,
+               cmake (>= 3.16),
+               debhelper-compat (= 13),
+               golang-1.26-go (>= 1.26),
+               libacl1-dev,
+               libboost-filesystem-dev,
+               libcurl4-openssl-dev,
+               libleveldb-dev,
+               libsnappy-dev,
+               libssl-dev,
+               libthrift-dev,
+               libx11-dev,
+               libxcb1-dev,
+               libyaml-cpp-dev,
+               patchelf,
+               pkg-config,
+               qt6-base-dev,
+               qt6-base-dev-tools,
+               qt6-l10n-tools,
+               qt6-tools-dev,
+               qt6-tools-dev-tools,
+               thrift-compiler
+Standards-Version: 4.7.0
+Homepage: https://github.com/qr243vbi/nekobox
+Rules-Requires-Root: no
+
+Package: nekobox
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: pkexec
+Description: Qt proxy client with its sing-box core
+ NekoBox is a Qt-based proxy configuration manager for sing-box based
+ cores. It imports subscription links, stores profiles, tests latency and
+ runs the selected configuration through a local core process.
+ .
+ This package ships both the graphical client and the core executable under
+ /usr/libexec/Iblis, so the GUI always finds the core it was built against.
+ It deliberately does not install the /usr/bin/sing-box compatibility
+ wrapper, so it can coexist with a standalone sing-box package.

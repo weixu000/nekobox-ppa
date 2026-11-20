@@ -1,0 +1,7 @@
+/*
+AMOLED Style Sheet for QT Applications
+Author: Jaime A. Quiroga P.
+Company: GTRONICK
+Last updated: 01/10/2021, 15:49.
+Available at: https://github.com/GTRONICK/QSS/blob/master/AMOLED.qss
+*/
