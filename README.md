@@ -24,4 +24,7 @@ present. Proxy traffic and desktop integration are not yet tested.
 Bundled license notices are indexed in `debian/third-party/INDEX.txt`;
 remaining provenance uncertainties are recorded in `debian/copyright`.
 PPA: https://launchpad.net/~oblivionw26/+archive/ubuntu/nekobox
-Source submission is not configured yet. No package upload yet.
+Recipe: https://code.launchpad.net/~oblivionw26/+recipe/nekobox
+The first Launchpad build has been requested; publication is not yet verified.
+Daily builds are disabled. Launchpad appends `~ubuntu26.04.1` to the recipe's
+base version; bump the base for subsequent packaging uploads.
