@@ -1,0 +1,22 @@
+# git-build-recipe format 0.4 deb-version 5.11.28.3-2~ppa1
+#
+# Source: the official upstream 5.11.28.3 release tarball pinned in
+# upstream.env, imported by scripts/prepare-recipe.sh on branch
+# upstream/5.11.28.3 (also tagged upstream/5.11.28.3, which git-build-recipe
+# needs for the orig tarball). The branch root is the extracted upstream tree
+# without debian/, minus two broken submodule .git pointer files and one empty
+# directory that Git cannot store (src/3rdparty/{cpr,qjs}/.git,
+# src/3rdparty/qjs/test262/).
+#
+# Packaging: branch main of the same repository. Only its debian/ subtree is
+# nested into the upstream tree.
+#
+# lp:~oblivionw26/+git/nekobox-ppa is the anonymous fetch URL of the same
+# repository as git+ssh://oblivionw26@git.launchpad.net/~oblivionw26/+git/nekobox-ppa
+# (the latter is the push URL; Launchpad builders cannot use a personal SSH
+# key).
+#
+# Keep Launchpad's "Build daily" setting off until a manual recipe build has
+# been verified.
+lp:~oblivionw26/+git/nekobox-ppa upstream/5.11.28.3
+nest-part packaging lp:~oblivionw26/+git/nekobox-ppa debian debian main
