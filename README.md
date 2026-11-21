@@ -28,3 +28,9 @@ Recipe: https://code.launchpad.net/~oblivionw26/+recipe/nekobox
 The first Launchpad build has been requested; publication is not yet verified.
 Daily builds are disabled. Launchpad appends `~ubuntu26.04.1` to the recipe's
 base version; bump the base for subsequent packaging uploads.
+
+## Upstream updates
+
+Stable releases are checked daily by OpenChamber. See
+[UPDATE-WORKFLOW.md](UPDATE-WORKFLOW.md) for validation and publication.
+Run `scripts/check-upstream.py` for a read-only check at any time.
