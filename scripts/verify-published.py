@@ -42,6 +42,7 @@ import argparse
 import gzip
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -49,6 +50,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -75,6 +77,16 @@ SERIES = tuple(KNOWN_SERIES)
 
 ARCHIVE = "~oblivionw26/+archive/ubuntu/nekobox"
 DEFAULT_MAX_PENDING_HOURS = 24.0
+
+# PPA indexes are mutable and may be served through a cache. Retry transient
+# GET failures and request fresh responses without changing archive URLs.
+TRANSIENT_HTTP_STATUSES = frozenset({500, 502, 503, 504})
+RETRY_DELAYS = (1.0, 2.0, 4.0)
+FETCH_HEADERS = {
+    "User-Agent": "nekobox-ppa-verify-published/3",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
 
 VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.+~:-]{0,127}$")
 FILENAME_RE = re.compile(r"^pool/[A-Za-z0-9.+~_/-]+\.deb$")
@@ -477,10 +489,18 @@ def classify_publication(
     )
 
 
-def fetch(url: str, destination: Path, timeout: float) -> bool:
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "nekobox-ppa-verify-published/3"}
-    )
+class _TransientFetchError(Exception):
+    """A GET that may succeed if retried."""
+
+
+def _download_once(
+    request: urllib.request.Request,
+    url: str,
+    destination: Path,
+    timeout: float,
+) -> bool:
+    """Attempt one idempotent GET; raise _TransientFetchError to retry."""
+    tmp = destination.with_name(destination.name + ".part")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             length = response.headers.get("Content-Length")
@@ -490,7 +510,6 @@ def fetch(url: str, destination: Path, timeout: float) -> bool:
                 length_value = None
             if length_value is not None and length_value > MAX_DOWNLOAD:
                 raise VerifyError(f"{url}: file is larger than {MAX_DOWNLOAD} bytes")
-            tmp = destination.with_name(destination.name + ".part")
             total = 0
             with tmp.open("wb") as handle:
                 while True:
@@ -501,15 +520,51 @@ def fetch(url: str, destination: Path, timeout: float) -> bool:
                     if total > MAX_DOWNLOAD:
                         raise VerifyError(f"{url}: download exceeded size limit")
                     handle.write(chunk)
-            os.replace(tmp, destination)
-            return True
+        os.replace(tmp, destination)
+        return True
     except urllib.error.HTTPError as exc:
+        exc.close()
         if exc.code == 404:
             return False
-        raise NetworkError(f"HTTP {exc.code} fetching {url}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        if exc.code not in TRANSIENT_HTTP_STATUSES:
+            raise NetworkError(f"HTTP {exc.code} fetching {url}") from exc
+        raise _TransientFetchError(f"HTTP {exc.code}") from exc
+    except (
+        urllib.error.URLError,
+        http.client.HTTPException,
+        TimeoutError,
+        OSError,
+    ) as exc:
         reason = getattr(exc, "reason", exc)
-        raise NetworkError(f"cannot fetch {url}: {reason}") from exc
+        raise _TransientFetchError(str(reason)) from exc
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def fetch(url: str, destination: Path, timeout: float) -> bool:
+    """Download an idempotent URL, retrying transient server/network errors.
+
+    A 404 still means "not published yet" and is returned as False without a
+    retry.  Non-transient HTTP errors fail immediately.  Checksum validation
+    happens after this function returns and is not retried here.
+    """
+    request = urllib.request.Request(url, headers=FETCH_HEADERS)
+    attempts = len(RETRY_DELAYS) + 1
+    last_reason = ""
+    for attempt in range(attempts):
+        try:
+            return _download_once(request, url, destination, timeout)
+        except _TransientFetchError as exc:
+            last_reason = str(exc)
+            if attempt + 1 >= attempts:
+                break
+            time.sleep(RETRY_DELAYS[attempt])
+    raise NetworkError(
+        f"cannot fetch {url} after {attempts} attempts: {last_reason}"
+    )
 
 
 def digests_for(package: dict[str, str]) -> dict[str, str]:

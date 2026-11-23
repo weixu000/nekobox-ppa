@@ -8,6 +8,7 @@ import json
 import sys
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -180,6 +181,149 @@ class VerifyPublishedTests(unittest.TestCase):
         }
         summary = vp.render_summary(result)
         self.assertIn("https://launchpad.net/sourcepub/9", summary)
+
+
+class FakeResponse:
+    def __init__(self, payload=b"payload"):
+        self.payload = payload
+        self.offset = 0
+        self.headers = {"Content-Length": str(len(payload))}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size):
+        chunk = self.payload[self.offset : self.offset + size]
+        self.offset += len(chunk)
+        return chunk
+
+
+class BrokenResponse(FakeResponse):
+    """A response whose body fails mid-transfer."""
+
+    def read(self, size):
+        raise ConnectionResetError("connection reset by peer")
+
+
+def http_error(code):
+    return urllib.error.HTTPError(
+        "https://example.test/x", code, "error", None, None
+    )
+
+
+class FetchTests(unittest.TestCase):
+    def fetch(self, tmp, side_effect):
+        destination = Path(tmp) / "index.gz"
+        with mock.patch.object(
+            vp.urllib.request, "urlopen", side_effect=side_effect
+        ) as opened, mock.patch.object(vp.time, "sleep") as slept:
+            result = vp.fetch("https://example.test/x", destination, 5)
+        return result, destination, opened, slept
+
+    def test_retries_503_then_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, destination, opened, slept = self.fetch(
+                tmp, [http_error(503), FakeResponse(b"fresh index")]
+            )
+            self.assertTrue(result)
+            self.assertEqual(destination.read_bytes(), b"fresh index")
+            self.assertFalse(
+                destination.with_name(destination.name + ".part").exists()
+            )
+            self.assertEqual(opened.call_count, 2)
+            slept.assert_called_once_with(vp.RETRY_DELAYS[0])
+
+    def test_retries_each_transient_status(self):
+        for code in (500, 502, 503, 504):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                result, _, opened, _ = self.fetch(
+                    tmp, [http_error(code), FakeResponse()]
+                )
+                self.assertTrue(result)
+                self.assertEqual(opened.call_count, 2)
+
+    def test_retries_timeout_then_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, _, opened, slept = self.fetch(
+                tmp, [TimeoutError("timed out"), FakeResponse()]
+            )
+            self.assertTrue(result)
+            self.assertEqual(opened.call_count, 2)
+            slept.assert_called_once_with(vp.RETRY_DELAYS[0])
+
+    def test_exhausted_transient_retries_fail(self):
+        attempts = len(vp.RETRY_DELAYS) + 1
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(vp.NetworkError) as caught:
+                self.fetch(tmp, [http_error(503)] * attempts)
+            self.assertIn(f"after {attempts} attempts", str(caught.exception))
+            self.assertIn("HTTP 503", str(caught.exception))
+
+    def test_retries_connection_reset_after_a_partial_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, destination, opened, slept = self.fetch(
+                tmp, [BrokenResponse(), FakeResponse(b"complete")]
+            )
+            self.assertTrue(result)
+            self.assertEqual(destination.read_bytes(), b"complete")
+            self.assertFalse(
+                destination.with_name(destination.name + ".part").exists()
+            )
+            self.assertEqual(opened.call_count, 2)
+            slept.assert_called_once_with(vp.RETRY_DELAYS[0])
+
+    def test_exhausted_retries_leave_no_partial_file(self):
+        attempts = len(vp.RETRY_DELAYS) + 1
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "index.gz"
+            with mock.patch.object(
+                vp.urllib.request,
+                "urlopen",
+                side_effect=[BrokenResponse() for _ in range(attempts)],
+            ), mock.patch.object(vp.time, "sleep"):
+                with self.assertRaises(vp.NetworkError) as caught:
+                    vp.fetch("https://example.test/x", destination, 5)
+            self.assertIn("connection reset", str(caught.exception))
+            self.assertFalse(destination.exists())
+            self.assertFalse(
+                destination.with_name(destination.name + ".part").exists()
+            )
+
+    def test_404_is_pending_and_not_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, destination, opened, slept = self.fetch(
+                tmp, http_error(404)
+            )
+            self.assertFalse(result)
+            self.assertFalse(destination.exists())
+            self.assertEqual(opened.call_count, 1)
+            slept.assert_not_called()
+
+    def test_non_transient_http_error_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "index.gz"
+            with mock.patch.object(
+                vp.urllib.request, "urlopen", side_effect=http_error(403)
+            ) as opened, mock.patch.object(vp.time, "sleep") as slept:
+                with self.assertRaises(vp.NetworkError) as caught:
+                    vp.fetch("https://example.test/x", destination, 5)
+            self.assertIn("HTTP 403", str(caught.exception))
+            self.assertEqual(opened.call_count, 1)
+            slept.assert_not_called()
+
+    def test_requests_a_fresh_copy_without_cachebusting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, opened, _ = self.fetch(tmp, [FakeResponse()])
+        request = opened.call_args.args[0]
+        headers = {
+            key.lower(): value for key, value in request.header_items()
+        }
+        self.assertEqual(headers["cache-control"], "no-cache")
+        self.assertIn("no-cache", headers["pragma"])
+        self.assertEqual(request.full_url, "https://example.test/x")
 
 
 class PublicationDecisionTests(unittest.TestCase):
