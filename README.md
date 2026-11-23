@@ -1,6 +1,8 @@
 # NekoBox Ubuntu packaging
 
 Independent packaging for a Launchpad PPA owned by `~oblivionw26`.
+Canonical repository: https://github.com/weixu000/nekobox-ppa
+Launchpad Git is a one-way deployment mirror; make changes on GitHub.
 Supported: Ubuntu 24.04 LTS (noble), 26.04 LTS (resolute), and 26.10
 (stonking), amd64.
 
@@ -32,6 +34,8 @@ base version; bump the base for subsequent packaging uploads.
 
 ## Upstream updates
 
-Stable releases are checked daily by OpenChamber. See
+GitHub Actions is being configured to check stable releases, validate them,
+and deploy to Launchpad. The existing OpenChamber check remains enabled until
+the Actions workflow is verified. See
 [UPDATE-WORKFLOW.md](UPDATE-WORKFLOW.md) for validation and publication.
 Run `scripts/check-upstream.py` for a read-only check at any time.
