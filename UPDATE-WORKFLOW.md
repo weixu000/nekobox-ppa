@@ -1,7 +1,11 @@
 # Stable upstream updates
 
-OpenChamber checks daily at 10:00 Asia/Shanghai in this project's setup session.
-Manage the “NekoBox stable upstream updates” task in OpenChamber's scheduler.
+GitHub is the authoritative repository; Launchpad Git is a one-way build
+mirror. Changes, including imported upstream branches and tags, originate
+on GitHub. The mirror must never overwrite a divergent branch.
+
+The GitHub Actions migration is in progress. Until its end-to-end validation
+passes, OpenChamber's existing daily 10:00 Asia/Shanghai check remains enabled.
 
 Run `scripts/check-upstream.py` with the network proxy from the machine's
 agent instructions. Only non-draft, non-prerelease releases with a unified
@@ -25,13 +29,26 @@ For a newer candidate:
    actual recipe from a neutral working directory with Launchpad's flags,
    including `--append-version`, before publishing.
 7. Only after validation passes, commit and push packaging and the new upstream
-   branch/tag to Launchpad. Update the Launchpad recipe text and request builds
+   branch/tag to GitHub, then mirror those exact refs to Launchpad.
+   Update the Launchpad recipe text and request builds
    for the validated target series, using the canonical account API URL.
 8. Verify Launchpad build results and downloaded published binary contents.
    Record failures for follow-up and notify the user of a published update or
    a blocker. Do not install packages or change the host's apt sources.
 
 Launchpad daily recipe builds stay disabled: they do not discover upstream
-releases or import new release tarballs. The release-check scheduler runs on
-this machine, so checks require it and OpenChamber to be running. Source hosting
-and package publication remain on Launchpad.
+releases or import new release tarballs. GitHub Actions will own discovery,
+validation and deployment; Launchpad will own source/binary builds and apt
+publication. Scheduled Actions may be delayed.
+
+## Deployment credentials
+
+Repository Actions secrets:
+
+- `LP_SSH_PRIVATE_KEY`: dedicated key registered with the Launchpad account;
+  used only to push validated refs to the build mirror.
+- `LP_CREDENTIALS`: Launchpad API credential file; used to update the recipe
+  and request builds. Keep the token out of logs and build artifacts.
+
+The workflow's GitHub token needs repository contents write permission only
+for deployment. Pull-request validation must not receive deployment secrets.
