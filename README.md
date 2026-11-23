@@ -34,8 +34,9 @@ base version; bump the base for subsequent packaging uploads.
 
 ## Upstream updates
 
-GitHub Actions is being configured to check stable releases, validate them,
-and deploy to Launchpad. The existing OpenChamber check remains enabled until
-the Actions workflow is verified. See
+GitHub Actions checks stable releases daily, validates all enabled Ubuntu
+targets, and deploys passing updates to Launchpad. Pushes to `main` use the same
+validation before updating the mirror; publication is checked every six hours.
+No desktop scheduler is required. See
 [UPDATE-WORKFLOW.md](UPDATE-WORKFLOW.md) for validation and publication.
 Run `scripts/check-upstream.py` for a read-only check at any time.

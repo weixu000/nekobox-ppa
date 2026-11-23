@@ -4,8 +4,23 @@ GitHub is the authoritative repository; Launchpad Git is a one-way build
 mirror. Changes, including imported upstream branches and tags, originate
 on GitHub. The mirror must never overwrite a divergent branch.
 
-The GitHub Actions migration is in progress. Until its end-to-end validation
-passes, OpenChamber's existing daily 10:00 Asia/Shanghai check remains enabled.
+GitHub Actions owns the scheduled checks; the desktop's OpenChamber scheduler
+is not needed.
+
+## GitHub workflows
+
+- `upstream-update.yml`: daily stable-release discovery at 02:00 UTC.
+  Pushes to `main` also validate and mirror the current pin.
+  Manual `validate` builds the current pin without publishing; `auto` checks
+  for a newer stable release; `mirror` validates and reconciles the current pin.
+  Manual writes require `publish=true`. Scheduled runs reconcile a missing
+  mirror/recipe/source submission even if the upstream version is unchanged.
+  Use `mirror` to retry that reconciliation immediately.
+- `verify-published.yml`: publication follow-up every six hours. Launchpad
+  builds and apt publication are asynchronous; a queued upload is not a failure.
+
+Use the Actions tab for manual runs and their validation logs. No workflow
+force-pushes the mirror or requests a duplicate already-published version.
 
 Run `scripts/check-upstream.py` with the network proxy from the machine's
 agent instructions. Only non-draft, non-prerelease releases with a unified
@@ -38,7 +53,7 @@ For a newer candidate:
 
 Launchpad daily recipe builds stay disabled: they do not discover upstream
 releases or import new release tarballs. GitHub Actions will own discovery,
-validation and deployment; Launchpad will own source/binary builds and apt
+validation and deployment; Launchpad owns source/binary builds and apt
 publication. Scheduled Actions may be delayed.
 GitHub can disable scheduled workflows after 60 days of repository inactivity;
 if that happens, re-enable the workflow in the Actions tab and run it manually.

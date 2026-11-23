@@ -19,6 +19,8 @@ name: Upstream release update
 # stops; there is no guaranteed keepalive API.
 
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: "0 2 * * *" # 10:00 Asia/Shanghai
   workflow_dispatch:
@@ -122,6 +124,26 @@ jobs:
               elif check.get("status") != "up-to-date":
                   raise SystemExit(f"unexpected check status: {check.get('status')}")
           base_version = f"{version}-{env['DEBIAN_REVISION']}"
+          if mode == "auto" and update == "false":
+              mirror_sha = subprocess.check_output(
+                  ["git", "ls-remote", "https://git.launchpad.net/~oblivionw26/+git/nekobox-ppa", "refs/heads/main"],
+                  text=True
+              ).split()[0]
+              github_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+              with urllib.request.urlopen(
+                  "https://api.launchpad.net/devel/~oblivionw26/+archive/ubuntu/nekobox"
+                  "?ws.op=getPublishedSources&source_name=nekobox&exact_match=true",
+                  timeout=30
+              ) as response:
+                  sources = json.load(response)["entries"]
+              submitted = {
+                  source["distro_series_link"].rsplit("/", 1)[-1]
+                  for source in sources
+                  if source["status"] in ("Published", "Pending")
+                  and source["source_package_version"].startswith(base_version + "~ubuntu")
+              }
+              if recipe["deb_version_template"] != base_version or mirror_sha != github_sha or not set(enabled) <= submitted:
+                  mode = "mirror"
           validate = "true" if (mode in ("validate", "mirror") or update == "true") else "false"
           base_sha = subprocess.check_output(
               ["git", "rev-parse", "HEAD"], text=True
@@ -367,7 +389,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            devscripts dpkg-dev fakeroot git-build-recipe xz-utils
+            devscripts dpkg-dev fakeroot git-build-recipe pristine-tar xz-utils
 
       - name: Assemble each series from the recipe
         run: |
@@ -453,7 +475,7 @@ jobs:
           chmod 600 "$key"
           keyscan=$(ssh-keyscan -t rsa git.launchpad.net 2>/dev/null) \
             || { echo "ssh-keyscan failed" >&2; exit 1; }
-          fingerprint=$(printf '%s\n' "$keyscan" | ssh-keygen -lf - -E sha256 | awk '{print $2}')
+          fingerprint=$(printf '%s\n' "$keyscan" | ssh-keygen -lf - -E sha256 | awk '{print $2}' | sort -u)
           if [ "$fingerprint" != "$LP_HOST_KEY_FINGERPRINT" ]; then
             echo "Launchpad host key fingerprint mismatch" >&2
             exit 1
@@ -465,13 +487,34 @@ jobs:
           echo "GIT_SSH_COMMAND=$ssh_command" >>"$GITHUB_ENV"
           git ls-remote "$LP_PUSH_URL" HEAD >/dev/null
 
-      - name: Push main to the canonical GitHub repository
-        if: needs.plan.outputs.update == 'true' && env.LP_WRITE == 'true'
+      - name: Install the Launchpad client
         run: |
           set -euo pipefail
-          git push origin HEAD:main
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends python3-launchpadlib
 
-      - name: Prepare and mirror the upstream refs
+      - name: Preflight the Launchpad API credentials
+        if: env.LP_WRITE == 'true'
+        env:
+          LP_CREDENTIALS: ${{ secrets.LP_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          [ -n "$LP_CREDENTIALS" ] || { echo "LP_CREDENTIALS is empty" >&2; exit 1; }
+          umask 077
+          creds="$RUNNER_TEMP/lp-preflight.credentials"
+          printf '%s' "$LP_CREDENTIALS" >"$creds"
+          trap 'rm -f "$creds"' EXIT
+          export LP_CREDENTIALS_FILE="$creds"
+          BROWSER=/bin/false python3 - <<'PY'
+          import os
+          from launchpadlib.launchpad import Launchpad
+          lp = Launchpad.login_with("nekobox-ppa-ci", "production", version="devel",
+                                    credentials_file=os.environ["LP_CREDENTIALS_FILE"], timeout=30)
+          assert lp.me.name == "oblivionw26", "Unexpected Launchpad account"
+          print("Launchpad API authentication verified")
+          PY
+
+      - name: Prepare and mirror the validated refs
         if: env.LP_WRITE == 'true'
         run: |
           set -euo pipefail
@@ -479,38 +522,24 @@ jobs:
             --output-dir "$GITHUB_WORKSPACE/build/recipe"
           stage="$GITHUB_WORKSPACE/build/recipe/nekobox-ppa"
           refspecs=(
+            "HEAD:refs/heads/main"
             "refs/heads/upstream/$VERSION:refs/heads/upstream/$VERSION"
             "refs/tags/upstream/$VERSION:refs/tags/upstream/$VERSION"
           )
-
-          # Mirror the upstream branch/tag to GitHub first, using the token
-          # configuration actions/checkout put in the main repository.
-          extra=$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader || true)
-          if [ -z "$extra" ]; then
-            echo "no GitHub token header available for the staging repository" >&2
-            exit 1
-          fi
-          git -C "$stage" config http.https://github.com/.extraheader "$extra"
-          git -C "$stage" config http.postBuffer 524288000
-          git -C "$stage" remote add github "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$stage" push github "${refspecs[@]}"
-
-          # Then mirror to Launchpad.  Never force: a diverged mirror must be
-          # resolved deliberately, not overwritten.
-          git -C "$stage" remote add launchpad "$LP_PUSH_URL"
-          git -C "$stage" push launchpad "${refspecs[@]}"
-
-          git push "$LP_PUSH_URL" HEAD:main
-
-      - name: Install the Launchpad client
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends python3-launchpadlib
-          python3 - <<'PY'
-          import launchpadlib
-          print("launchpadlib", getattr(launchpadlib, "__version__", "unknown"))
-          PY
+          git fetch "$stage" \
+            "refs/heads/upstream/$VERSION:refs/heads/upstream/$VERSION" \
+            "refs/tags/upstream/$VERSION:refs/tags/upstream/$VERSION"
+          # Probe both destinations before changing either. Each repository's
+          # main, source branch and tag advance atomically, without force.
+          git push --atomic --dry-run origin "${refspecs[@]}"
+          git push --atomic --dry-run "$LP_PUSH_URL" "${refspecs[@]}"
+          git push --atomic origin "${refspecs[@]}"
+          git push --atomic "$LP_PUSH_URL" "${refspecs[@]}"
+          for ref in refs/heads/main "refs/heads/upstream/$VERSION" "refs/tags/upstream/$VERSION"; do
+            expected=$(git rev-parse "$ref")
+            actual=$(git ls-remote "$LP_PUSH_URL" "$ref" | awk '{print $1}')
+            [ "$actual" = "$expected" ] || { echo "Mirror mismatch: $ref" >&2; exit 1; }
+          done
 
       - name: Update the recipe and request builds
         env:
