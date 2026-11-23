@@ -26,6 +26,13 @@ and becomes stale once the pin's commit is older than the same limit.  A
 scheduled run treats ordinary pending as success; pass --require-published for
 a manual verification that must fail.
 
+A download that still fails after the transient retries is recorded for that
+target as "network-error" instead of aborting the run: the other targets are
+still verified, and the JSON/summary keep every result.  Such a run is not ok
+and exits 3, because the archive was unreachable rather than the artifact
+being wrong.  Only a failure to reach the archive API before any target is
+verified aborts the whole run.
+
 Usage:
     scripts/verify-published.py
     scripts/verify-published.py --series noble,resolute --require-published
@@ -33,7 +40,8 @@ Usage:
     scripts/verify-published.py --expect-series noble,resolute,stonking
 
 Exit codes: 0 verified or ordinary pending, 1 mismatch/failed/stale or pending
-with --require-published, 2 usage/configuration, 3 network or Launchpad API.
+with --require-published, 2 usage/configuration, 3 network or Launchpad API
+(including a per-target download outage recorded as network-error).
 """
 
 from __future__ import annotations
@@ -1253,8 +1261,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
         except UsageError:
             raise
-        except NetworkError:
-            raise
+        except NetworkError as exc:
+            # A sustained archive outage for one target must not discard the
+            # results already verified for the others.  Record it, keep going,
+            # and let main() report the run as a network failure.
+            entry = {
+                "status": "network-error",
+                "detail": str(exc),
+                "base_image": KNOWN_SERIES[series]["base"],
+            }
         except VerifyError as exc:
             entry = {
                 "status": "failed",
@@ -1265,7 +1280,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         results[series] = entry
 
     failed = any(
-        entry["status"] in ("failed", "stale")
+        entry["status"] in ("failed", "stale", "network-error")
         for entry in results.values()
     )
     pending = any(entry["status"] == "pending" for entry in results.values())
@@ -1355,6 +1370,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"sha256={entry['sha256']}"
                 + (f" source={source_format}" if source_format else "")
             )
+        elif entry["status"] == "network-error":
+            print(f"{series}: network-error: {entry.get('detail', '')}")
         elif entry["status"] in ("failed", "stale"):
             build_url = entry.get("build_url")
             print(
@@ -1363,6 +1380,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(f"{series}: pending: {entry.get('detail', '')}")
+    # An incomplete run caused by the archive being unreachable is a network
+    # failure, not a verification verdict, so it keeps exit code 3 even if
+    # another target also failed semantically.
+    if any(
+        result["results"][series]["status"] == "network-error"
+        for series in result["series"]
+    ):
+        return 3
     return 0 if result["ok"] else 1
 
 

@@ -785,6 +785,101 @@ class RunTests(unittest.TestCase):
             )
             self.assertFalse(result["ok"], status)
 
+    def test_network_error_keeps_other_results_and_exits_3(self):
+        with tempfile.TemporaryDirectory() as tmp_name:
+            tmp = Path(tmp_name)
+            args = self.run_args(tmp)
+            entries = {
+                "noble": {
+                    "status": "verified",
+                    "published_version": "1.0-1~ubuntu24.04.1",
+                    "sha256": "a" * 64,
+                    "deb_url": "https://example.test/nekobox.deb",
+                },
+                "resolute": vp.NetworkError(
+                    "cannot fetch https://example.test/Packages.gz after 6 "
+                    "attempts: HTTP 503"
+                ),
+                "stonking": {"status": "pending", "detail": "waiting"},
+            }
+
+            def verify(series, *args, **kwargs):
+                entry = entries[series]
+                if isinstance(entry, Exception):
+                    raise entry
+                return dict(entry)
+
+            with mock.patch.object(
+                vp, "collect_launchpad_context", return_value=FakeContext()
+            ), mock.patch.object(
+                vp, "verify_series", side_effect=verify
+            ) as verify_series:
+                result = vp.run(args)
+                verify_calls = [
+                    call.args[0] for call in verify_series.call_args_list
+                ]
+            written = json.loads(
+                (tmp / "verification.json").read_text(encoding="utf-8")
+            )
+            summary = (tmp / "verification.md").read_text(encoding="utf-8")
+            stdout = io.StringIO()
+            with mock.patch.object(
+                vp, "run", return_value=result
+            ), contextlib.redirect_stdout(stdout):
+                code = vp.main(["--repo-root", str(tmp)])
+
+        # The outage for one target does not stop the remaining targets.
+        self.assertEqual(verify_calls, ["noble", "resolute", "stonking"])
+        # Every result is persisted, including the successful target.
+        self.assertEqual(written["results"]["noble"]["status"], "verified")
+        self.assertEqual(
+            written["results"]["noble"]["published_version"],
+            "1.0-1~ubuntu24.04.1",
+        )
+        self.assertEqual(
+            written["results"]["resolute"]["status"], "network-error"
+        )
+        self.assertIn("HTTP 503", written["results"]["resolute"]["detail"])
+        self.assertEqual(
+            written["results"]["resolute"]["base_image"], "ubuntu:26.04"
+        )
+        self.assertEqual(written["results"]["stonking"]["status"], "pending")
+        self.assertFalse(result["ok"])
+        self.assertFalse(written["ok"])
+        # The workflow's existing filter still finds the successful target.
+        self.assertEqual(
+            [
+                series
+                for series in written["series"]
+                if written["results"][series]["status"] == "verified"
+            ],
+            ["noble"],
+        )
+        self.assertIn("network-error", summary)
+        self.assertIn("1.0-1~ubuntu24.04.1", summary)
+        self.assertEqual(code, 3)
+        output = stdout.getvalue()
+        self.assertIn("noble: verified 1.0-1~ubuntu24.04.1", output)
+        self.assertIn("resolute: network-error: cannot fetch", output)
+        self.assertIn("stonking: pending: waiting", output)
+        self.assertNotIn("resolute: pending", output)
+
+    def test_unreachable_launchpad_api_still_aborts_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp_name:
+            tmp = Path(tmp_name)
+            self.run_args(tmp)
+            stderr = io.StringIO()
+            with mock.patch.object(
+                vp,
+                "collect_launchpad_context",
+                side_effect=vp.NetworkError("cannot log in to Launchpad"),
+            ), contextlib.redirect_stderr(stderr):
+                code = vp.main(["--repo-root", str(tmp)])
+        # No per-series result can be produced, so this stays a global
+        # network failure rather than a partial verification.
+        self.assertEqual(code, 3)
+        self.assertIn("cannot log in to Launchpad", stderr.getvalue())
+
     def test_result_records_the_explicit_target_set(self):
         result, written = self.run_with(
             {"status": "pending", "detail": "waiting"}
@@ -854,6 +949,54 @@ class RunTests(unittest.TestCase):
             ), mock.patch.object(vp, "verify_series", return_value={}):
                 with self.assertRaises(vp.UsageError):
                     vp.run(args)
+
+
+class MainTests(unittest.TestCase):
+    def main_for(self, results, ok):
+        result = {"ok": ok, "series": list(results), "results": results}
+        stdout = io.StringIO()
+        with mock.patch.object(
+            vp, "run", return_value=result
+        ), contextlib.redirect_stdout(stdout):
+            code = vp.main(["--repo-root", "/tmp"])
+        return code, stdout.getvalue()
+
+    def test_verified_run_returns_0(self):
+        code, output = self.main_for(
+            {
+                "noble": {
+                    "status": "verified",
+                    "published_version": "1-1~ubuntu24.04.1",
+                    "sha256": "a" * 64,
+                }
+            },
+            ok=True,
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("noble: verified 1-1~ubuntu24.04.1", output)
+
+    def test_semantic_failure_returns_1(self):
+        code, output = self.main_for(
+            {"noble": {"status": "failed", "detail": "size mismatch"}},
+            ok=False,
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("noble: failed: size mismatch", output)
+
+    def test_network_error_returns_3_even_beside_a_failure(self):
+        code, output = self.main_for(
+            {
+                "noble": {"status": "failed", "detail": "size mismatch"},
+                "resolute": {
+                    "status": "network-error",
+                    "detail": "HTTP 503 after 6 attempts",
+                },
+            },
+            ok=False,
+        )
+        self.assertEqual(code, 3)
+        self.assertIn("resolute: network-error: HTTP 503", output)
+        self.assertIn("noble: failed: size mismatch", output)
 
 
 if __name__ == "__main__":
