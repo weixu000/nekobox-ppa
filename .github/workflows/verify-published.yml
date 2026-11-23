@@ -1,0 +1,227 @@
+name: Verify published PPA artifacts
+
+# Launchpad's publisher can take an hour or more after a successful build
+# before a .deb appears in the PPA.  This scheduled follow-up never blocks the
+# publication workflow, but it no longer treats every missing version as an
+# ordinary delay: the public Launchpad recipe/archive is consulted so a failed
+# or chroot/dependency-stuck build fails with its build URL, and a pending
+# state older than 24 hours is reported as stale.
+#
+# It verifies the strong digest(s) present in each series' Packages index
+# (stonking currently supplies SHA512 but no SHA256), checks the published
+# 3.0 (quilt) source .dsc and its orig/debian tarballs, and checks the
+# installed GUI/core paths and notice index.
+#
+# Only after a series is verified does the hosted smoke matrix run.  It pulls
+# the published .deb (no rebuild), installs it with its runtime dependencies in
+# a matching Ubuntu container, then runs the package smoke test in that image
+# with networking disabled.  Nothing is installed on the runner host.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream version (default: upstream.env)"
+        type: string
+        required: false
+      require_published:
+        description: "Fail when a series has not published the version yet"
+        type: boolean
+        default: true
+
+concurrency:
+  group: verify-published
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  verify:
+    name: Verify published artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      EXPECTED_SERIES: noble,resolute,stonking
+    outputs:
+      enabled_series: ${{ steps.targets.outputs.enabled_series }}
+      verified_series: ${{ steps.targets.outputs.verified_series }}
+      smoke_matrix: ${{ steps.targets.outputs.smoke_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The pin's commit age is used to detect a version that never made it
+          # into the recipe at all.
+          fetch-depth: 0
+
+      - name: Use the runner temp directory
+        run: echo "TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
+
+      - name: Install the Launchpad client
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            python3-launchpadlib
+
+      - name: Verify each series
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          args=(--json build/published-verification.json \
+                --summary build/published-verification.md \
+                --expect-series "$EXPECTED_SERIES")
+          if [ -n "$INPUT_VERSION" ]; then
+            args+=(--version "$INPUT_VERSION")
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+             [ "${{ inputs.require_published }}" = "true" ]; then
+            args+=(--require-published)
+          fi
+          python3 scripts/verify-published.py "${args[@]}"
+
+      - name: Record the verified targets
+        id: targets
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("build/published-verification.json")
+          data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+          results = data.get("results", {})
+          enabled = data.get("enabled_series") or list(results)
+          verified = [
+              series
+              for series in data.get("series", [])
+              if results.get(series, {}).get("status") == "verified"
+          ]
+          matrix = []
+          for series in verified:
+              entry = results[series]
+              matrix.append(
+                  {
+                      "series": series,
+                      "base": entry.get("base_image", ""),
+                      "version": entry.get("published_version", ""),
+                      "deb_url": entry.get("deb_url", ""),
+                      "sha256": entry.get("sha256", ""),
+                  }
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"enabled_series={json.dumps(enabled)}\n")
+              out.write(f"verified_series={json.dumps(verified)}\n")
+              out.write(
+                  f"smoke_matrix={json.dumps(matrix, separators=(',', ':'))}\n"
+              )
+          PY
+
+      - name: Publish the run summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f build/published-verification.md ]; then
+            cat build/published-verification.md >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-verification
+          path: |
+            build/published-verification.json
+            build/published-verification.md
+          if-no-files-found: warn
+
+  smoke:
+    name: Runtime smoke ${{ matrix.series }}
+    needs: verify
+    # Run for the series that verified, even when another series failed.  An
+    # empty matrix means there is nothing safe to install.
+    if: ${{ !cancelled() && needs.verify.outputs.smoke_matrix != '' && needs.verify.outputs.smoke_matrix != '[]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.verify.outputs.smoke_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the published package
+        env:
+          DEB_URL: ${{ matrix.deb_url }}
+          DEB_SHA256: ${{ matrix.sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/smoke
+          deb="build/smoke/$(basename "$DEB_URL")"
+          curl --fail --silent --show-error --location \
+            --retry 3 --retry-delay 5 --output "$deb" "$DEB_URL"
+          printf '%s  %s\n' "$DEB_SHA256" "$deb" | sha256sum --check --strict
+          printf 'DEB_PATH=%s\n' "$deb" >>"$GITHUB_ENV"
+
+      - name: Install the package and dependencies in a matching image
+        env:
+          BASE_IMAGE: ${{ matrix.base }}
+          SERIES: ${{ matrix.series }}
+        run: |
+          set -euo pipefail
+          container="nekobox-smoke-$SERIES-$$"
+          image="nekobox-published-smoke:$SERIES"
+          cleanup() { docker rm --force "$container" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run --detach --name "$container" \
+            --volume "$PWD/build/smoke:/smoke:ro" \
+            "$BASE_IMAGE" sleep infinity
+          docker exec "$container" bash -euxo pipefail -c '
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+              ca-certificates diffutils gzip qt6-qpa-plugins /smoke/*.deb
+            apt-get clean
+            rm -rf /var/lib/apt/lists/*
+          '
+          docker commit "$container" "$image" >/dev/null
+          printf 'SMOKE_IMAGE=%s\n' "$image" >>"$GITHUB_ENV"
+
+      - name: Smoke test with networking disabled
+        env:
+          SERIES: ${{ matrix.series }}
+          VERSION: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          deb_name="$(basename "$DEB_PATH")"
+          docker run --rm --network=none \
+            --env DEBIAN_FRONTEND=noninteractive \
+            --volume "$PWD/scripts:/scripts:ro" \
+            --volume "$PWD/build/smoke:/smoke:ro" \
+            --volume "$PWD/debian/third-party/INDEX.txt:/expected/INDEX.txt:ro" \
+            "$SMOKE_IMAGE" \
+            bash /scripts/smoke-test-package.sh \
+              --deb "/smoke/$deb_name" \
+              --version "$VERSION" \
+              --expected-index /expected/INDEX.txt \
+              --series "$SERIES" \
+            2>&1 | tee "build/smoke-$SERIES.log"
+
+      - name: Upload the smoke log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-smoke-${{ matrix.series }}
+          path: build/smoke-${{ matrix.series }}.log
+          if-no-files-found: ignore
