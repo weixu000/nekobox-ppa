@@ -41,14 +41,6 @@ DEBIAN_REVISION=2~ppa1
 DEBIAN_DISTRIBUTION=resolute
 """
 
-RECIPE_TEXT = """# git-build-recipe format 0.4 deb-version 5.11.28.3-2~ppa1
-#
-# pinned 5.11.28.3 for testing
-lp:~oblivionw26/+git/nekobox-ppa upstream/5.11.28.3
-nest-part packaging lp:~oblivionw26/+git/nekobox-ppa debian debian main
-"""
-
-
 class PrepareUpdateTests(unittest.TestCase):
     def test_env_update_preserves_comments_and_replaces_once(self):
         values = {
@@ -65,17 +57,8 @@ class PrepareUpdateTests(unittest.TestCase):
             self.assertIn(f"{key}={value}", updated)
         self.assertIn("DEBIAN_REVISION=2~ppa1", updated)
 
-    def test_recipe_update_changes_header_and_branch(self):
-        updated = pu.update_recipe_text(
-            RECIPE_TEXT, "5.11.28.3", "5.11.28.4", "2~ppa1"
-        )
-        self.assertTrue(
-            updated.startswith(
-                "# git-build-recipe format 0.4 deb-version 5.11.28.4-2~ppa1"
-            )
-        )
-        self.assertIn("upstream/5.11.28.4", updated)
-        self.assertNotIn("5.11.28.3", updated)
+    def test_recipe_helper_is_gone(self):
+        self.assertFalse(hasattr(pu, "update_recipe_text"))
 
     def test_changelog_prepend_and_version(self):
         old = "nekobox (5.11.28.3-2~ppa1) resolute; urgency=medium\n\n -- X <x@y>  date\n"
@@ -128,7 +111,6 @@ class PrepareUpdateTests(unittest.TestCase):
             (repo / "debian").mkdir()
             (repo / "downloads").mkdir()
             (repo / "upstream.env").write_text(ENV_TEXT, encoding="utf-8")
-            (repo / "nekobox.recipe").write_text(RECIPE_TEXT, encoding="utf-8")
             (repo / "debian" / "changelog").write_text(
                 "nekobox (5.11.28.3-2~ppa1) resolute; urgency=medium\n\n"
                 " -- Oblivion W <oblivion.w23@gmail.com>  Fri, 20 Nov 2026 20:56:07 +0800\n",
@@ -189,8 +171,59 @@ class PrepareUpdateTests(unittest.TestCase):
             self.assertTrue(
                 changelog.startswith("nekobox (5.11.28.4-2~ppa1) resolute;")
             )
-            recipe = (repo / "nekobox.recipe").read_text()
-            self.assertIn("upstream/5.11.28.4", recipe)
+            self.assertFalse(
+                (repo / "nekobox.recipe").exists(),
+                "prepare-update must not require or create a recipe",
+            )
+
+    def test_legacy_recipe_is_not_modified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "debian").mkdir()
+            (repo / "downloads").mkdir()
+            (repo / "upstream.env").write_text(ENV_TEXT, encoding="utf-8")
+            legacy = "# git-build-recipe format 0.4 deb-version 5.11.28.3-2~ppa1\n"
+            (repo / "nekobox.recipe").write_text(legacy, encoding="utf-8")
+            (repo / "debian" / "changelog").write_text(
+                "nekobox (5.11.28.3-2~ppa1) resolute; urgency=medium\n\n"
+                " -- Oblivion W <oblivion.w23@gmail.com>  Fri, 20 Nov 2026 20:56:07 +0800\n",
+                encoding="utf-8",
+            )
+            tarball = repo / "downloads" / "nekobox-unified-source-5.11.28.4.tar.xz"
+            with tarfile.open(tarball, "w:xz") as archive:
+                payload = b"hello\n"
+                info = tarfile.TarInfo("nekobox-unified-source-5.11.28.4/README")
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+            digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
+            check = {
+                "schema_version": 1,
+                "status": "update-available",
+                "current": {"version": "5.11.28.3"},
+                "candidate": {
+                    "version": "5.11.28.4",
+                    "asset_name": "nekobox-unified-source-5.11.28.4.tar.xz",
+                    "asset_url": (
+                        "https://github.com/qr243vbi/nekobox/releases/download/"
+                        "5.11.28.4/nekobox-unified-source-5.11.28.4.tar.xz"
+                    ),
+                    "digest": "sha256:" + digest,
+                    "size": tarball.stat().st_size,
+                    "released_at": "2026-09-01T00:00:00Z",
+                },
+            }
+            check_path = repo / "check.json"
+            check_path.write_text(json.dumps(check), encoding="utf-8")
+            rc = pu.main([
+                "--check-json", str(check_path),
+                "--repo-root", str(repo),
+                "--tarball", str(tarball),
+                "--metadata", str(repo / "build" / "release.json"),
+            ])
+            self.assertEqual(rc, 0)
+            self.assertEqual(
+                (repo / "nekobox.recipe").read_text(encoding="utf-8"), legacy
+            )
 
 
 if __name__ == "__main__":

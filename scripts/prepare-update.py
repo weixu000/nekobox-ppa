@@ -7,7 +7,11 @@ This is the deterministic first step of the GitHub Actions release pipeline:
   2. download the unified source tarball and verify its SHA-256 (the GitHub
      asset digest is required for unattended runs);
   3. inspect the archive members without extracting them;
-  4. update upstream.env, debian/changelog and nekobox.recipe together.
+  4. update upstream.env and debian/changelog together.
+
+The old Launchpad git recipe is no longer an active input: publication uses
+signed source uploads (scripts/source-upload.py), so this step has no recipe
+to rewrite.  The packaging-only repository remains the source of debian/.
 
 It does not commit, push, build, or regenerate licence notices.  The workflow
 runs scripts/prepare-source.sh and scripts/collect-notices.py afterwards, then
@@ -144,26 +148,6 @@ def prepend_changelog(text: str, version: str, distribution: str, body: str,
         f" -- Oblivion W <oblivion.w23@gmail.com>  {date}\n\n"
     )
     return entry + text
-
-
-def update_recipe_text(text: str, old_version: str, new_version: str,
-                       revision: str) -> str:
-    header = "# git-build-recipe format 0.4 deb-version "
-    lines = text.splitlines()
-    if not lines or not lines[0].startswith(header):
-        raise UsageError(
-            "nekobox.recipe line 1 must start with "
-            f"{header!r}"
-        )
-    if old_version not in text:
-        raise UsageError(
-            f"nekobox.recipe does not mention the pinned version {old_version}"
-        )
-    updated = text.replace(old_version, new_version)
-    lines = updated.splitlines()
-    expected_version = f"{new_version}-{revision}"
-    lines[0] = header + expected_version
-    return "\n".join(lines) + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -393,7 +377,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(args.repo_root).resolve()
     env_path = repo / "upstream.env"
     changelog_path = repo / "debian" / "changelog"
-    recipe_path = repo / "nekobox.recipe"
 
     env = read_env(env_path)
     current_version = require(env, "UPSTREAM_VERSION")
@@ -476,29 +459,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             changelog_text, base_version, distribution, body, rfc2822_now()
         )
 
-    recipe_text = update_recipe_text(
-        recipe_path.read_text(encoding="utf-8"),
-        current_version,
-        version,
-        revision,
-    )
-
-    # Keep the package version and recipe header from drifting apart.
+    # Keep the package version and the pinned env from drifting apart.
     first_changelog_version = changelog_version(changelog_text)
-    first_recipe = recipe_text.splitlines()[0]
     if first_changelog_version != base_version:
         raise VerificationError(
             f"internal error: changelog is {first_changelog_version}, "
             f"expected {base_version}"
         )
-    if not first_recipe.endswith(base_version):
-        raise VerificationError(
-            f"internal error: recipe header does not pin {base_version}"
-        )
 
     env_path.write_text(new_env, encoding="utf-8")
     changelog_path.write_text(changelog_text, encoding="utf-8")
-    recipe_path.write_text(recipe_text, encoding="utf-8")
 
     metadata = {
         "schema_version": SCHEMA_VERSION,

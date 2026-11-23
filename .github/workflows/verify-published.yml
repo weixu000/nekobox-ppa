@@ -3,9 +3,15 @@ name: Verify published PPA artifacts
 # Launchpad's publisher can take an hour or more after a successful build
 # before a .deb appears in the PPA.  This scheduled follow-up never blocks the
 # publication workflow, but it no longer treats every missing version as an
-# ordinary delay: the public Launchpad recipe/archive is consulted so a failed
-# or chroot/dependency-stuck build fails with its build URL, and a pending
-# state older than 24 hours is reported as stale.
+# ordinary delay: the public archive API is consulted for the signed source
+# upload and binary build records, so a deleted source, failed build or
+# chroot/dependency-stuck build fails with its record URL, and a pending state
+# older than 24 hours is reported as stale.
+#
+# The targets are defined explicitly in scripts/verify-published.py (noble,
+# resolute, stonking); the legacy Launchpad git recipe is not consulted.
+# EXPECTED_SERIES below guards that the workflow and the script agree on the
+# target set.
 #
 # It verifies the strong digest(s) present in each series' Packages index
 # (stonking currently supplies SHA512 but no SHA256), checks the published
@@ -57,8 +63,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The pin's commit age is used to detect a version that never made it
-          # into the recipe at all.
+          # The pin's commit age is used to detect a version with no recorded
+          # source upload at all.
           fetch-depth: 0
 
       - name: Use the runner temp directory

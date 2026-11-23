@@ -1,18 +1,18 @@
 name: Upstream release update
 
-# GitHub is canonical; Launchpad is a one-way build mirror.  A scheduled run
+# GitHub stores packaging; Launchpad builds signed source uploads. A scheduled run
 # detects a stable upstream release, prepares the packaging changes, validates
 # every supported series with an offline build plus GUI/core smoke test, then
-# (and only then) pushes the validated refs and requests Launchpad builds.
+# (and only then) commits the packaging and uploads source packages.
 #
 # Manual modes:
 #   validate  build and smoke-test the currently pinned source; no writes
 #   auto      detect an update; publish only if "publish" is checked
-#   mirror    validate the current pin, mirror refs (no version bump), and
+#   reconcile validate the current pin, upload missing sources (no version bump), and
 #             verify already published artifacts; duplicate builds are skipped
 #
 # The first hosted run should be mode=validate.  Set publish=true to let a
-# manual auto/mirror run write to GitHub and Launchpad.
+# manual auto/reconcile run write to GitHub and Launchpad.
 #
 # GitHub disables scheduled workflows after 60 days without repository
 # activity.  Re-enable this workflow from the Actions tab if the daily run
@@ -26,15 +26,15 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "validate: no writes; auto: detect update; mirror: current pin"
+        description: "validate: no writes; auto: detect update; reconcile: current pin"
         type: choice
         options:
           - validate
           - auto
-          - mirror
+          - reconcile
         default: validate
       publish:
-        description: "Push validated refs to Launchpad and request builds"
+        description: "Commit validated packaging and upload signed sources to the PPA"
         type: boolean
         default: false
       require_published:
@@ -60,7 +60,7 @@ jobs:
     permissions:
       contents: read
     env:
-      MODE: ${{ github.event_name == 'schedule' && 'auto' || github.event_name == 'push' && 'mirror' || inputs.mode }}
+      MODE: ${{ github.event_name == 'schedule' && 'auto' || github.event_name == 'push' && 'reconcile' || inputs.mode }}
     outputs:
       mode: ${{ steps.plan.outputs.mode }}
       update: ${{ steps.plan.outputs.update }}
@@ -94,20 +94,15 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          import runpy
           import subprocess
-          import urllib.request
           from pathlib import Path
 
           mode = os.environ["MODE"]
           Path("build").mkdir(exist_ok=True)
-          with urllib.request.urlopen(
-              "https://api.launchpad.net/devel/~oblivionw26/+recipe/nekobox", timeout=30
-          ) as response:
-              recipe = json.load(response)
-          enabled = sorted(url.rstrip("/").rsplit("/", 1)[-1] for url in recipe["distroseries"])
-          images = {"noble": "ubuntu:24.04", "resolute": "ubuntu:26.04", "stonking": "ubuntu:26.10"}
-          if not enabled or any(series not in images for series in enabled):
-              raise SystemExit(f"Unsupported enabled Launchpad series: {enabled}")
+          targets = runpy.run_path("scripts/source-upload.py")["SERIES"]
+          images = {series: data["base"] for series, data in targets.items()}
+          enabled = list(images)
           env = {}
           for raw in Path("upstream.env").read_text(encoding="utf-8").splitlines():
               line = raw.strip()
@@ -127,26 +122,17 @@ jobs:
                   raise SystemExit(f"unexpected check status: {check.get('status')}")
           base_version = f"{version}-{env['DEBIAN_REVISION']}"
           if mode == "auto" and update == "false":
-              mirror_sha = subprocess.check_output(
-                  ["git", "ls-remote", "https://git.launchpad.net/~oblivionw26/+git/nekobox-ppa", "refs/heads/main"],
-                  text=True
-              ).split()[0]
-              github_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-              with urllib.request.urlopen(
-                  "https://api.launchpad.net/devel/~oblivionw26/+archive/ubuntu/nekobox"
-                  "?ws.op=getPublishedSources&source_name=nekobox&exact_match=true",
-                  timeout=30
-              ) as response:
-                  sources = json.load(response)["entries"]
-              submitted = {
-                  source["distro_series_link"].rsplit("/", 1)[-1]
-                  for source in sources
-                  if source["status"] in ("Published", "Pending")
-                  and source["source_package_version"].startswith(base_version + "~ubuntu")
-              }
-              if recipe["deb_version_template"] != base_version or mirror_sha != github_sha or not set(enabled) <= submitted:
-                  mode = "mirror"
-          validate = "true" if (mode in ("validate", "mirror") or update == "true") else "false"
+              subprocess.run([
+                  "python3", "scripts/source-upload.py", "plan",
+                  "--json", "build/submission-plan.json",
+              ], check=True)
+              submission = json.loads(Path("build/submission-plan.json").read_text())
+              for series, entry in submission["series"].items():
+                  if entry.get("source_status") not in (None, "Published", "Pending"):
+                      raise SystemExit(f"{series}: {entry['reason']}")
+              if submission["needed_series"]:
+                  mode = "reconcile"
+          validate = "true" if (mode in ("validate", "reconcile") or update == "true") else "false"
           base_sha = subprocess.check_output(
               ["git", "rev-parse", "HEAD"], text=True
           ).strip()
@@ -209,7 +195,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends dpkg-dev fakeroot xz-utils
 
-      - name: Update pinned env, changelog and recipe
+      - name: Update pinned env and changelog
         run: |
           set -euo pipefail
           scripts/prepare-update.py --check-json build/update-check.json
@@ -244,9 +230,8 @@ jobs:
           test -s build/update.patch
           grep -q '^diff --git a/upstream.env ' build/update.patch
           grep -q '^diff --git a/debian/changelog ' build/update.patch
-          grep -q '^diff --git a/nekobox.recipe ' build/update.patch
           bad=$(git status --porcelain | sed -E 's/^.. //' | \
-              grep -Ev '^(upstream\.env|debian/changelog|nekobox\.recipe|debian/third-party/)' || true)
+              grep -Ev '^(upstream\.env|debian/changelog|debian/third-party/)' || true)
           if [ -n "$bad" ]; then
               printf 'unexpected changed paths:\n%s\n' "$bad" >&2
               exit 1
@@ -256,9 +241,7 @@ jobs:
           from pathlib import Path
           meta = json.loads(Path("build/release.json").read_text())
           first = Path("debian/changelog").read_text().splitlines()[0]
-          recipe = Path("nekobox.recipe").read_text().splitlines()[0]
           assert meta["base_version"] in first, first
-          assert recipe.endswith(meta["base_version"]), recipe
           print(f"patch for {meta['base_version']} is consistent")
           PY
 
@@ -309,23 +292,44 @@ jobs:
           set -euo pipefail
           git apply --binary build/update.patch
 
-      - name: Show the validated version
+      - name: Install source packaging tools
         run: |
           set -euo pipefail
-          . ./upstream.env
-          echo "VERSION=$UPSTREAM_VERSION-$DEBIAN_REVISION" >>"$GITHUB_ENV"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            devscripts dpkg-dev fakeroot debhelper xz-utils
 
-      - name: Prepare the source tree
+      - name: Prepare and roundtrip the exact source upload
+        env:
+          SERIES: ${{ matrix.series }}
         run: |
           set -euo pipefail
-          scripts/prepare-source.sh
+          python3 scripts/source-upload.py plan --series "$SERIES" --json build/upload-plan.json
+          python3 scripts/source-upload.py prepare --plan build/upload-plan.json --series "$SERIES"
+          python3 scripts/source-upload.py sign --unsigned --plan build/upload-plan.json --series "$SERIES"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          data = json.loads(Path(f"build/upload/{os.environ['SERIES']}/prepare.json").read_text())
+          with open(os.environ["GITHUB_ENV"], "a") as out:
+              out.write(f"BUILD_TREE={data['tree']}\nVERSION={data['target_version']}\n")
+          PY
+
+      - name: Save the validated source identity
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-identity-${{ matrix.series }}
+          path: build/upload/${{ matrix.series }}/prepare.json
+          if-no-files-found: error
 
       - name: Offline build and smoke test on ${{ matrix.series }}
         run: |
           set -euo pipefail
           scripts/validate-offline-build.sh \
             --series "${{ matrix.series }}" \
-            --base "${{ matrix.base }}"
+            --base "${{ matrix.base }}" \
+            --tree "$BUILD_TREE" --version "$VERSION"
 
       - name: Record the artifact
         if: always()
@@ -333,7 +337,7 @@ jobs:
           set -euo pipefail
           {
             echo "### ${{ matrix.series }}"
-            for deb in build/nekobox_*.deb; do
+            for deb in build/upload/${{ matrix.series }}/nekobox_*.deb; do
               [ -e "$deb" ] || continue
               echo "- $(basename "$deb"): $(sha256sum "$deb" | awk '{print $1}')"
             done
@@ -346,68 +350,27 @@ jobs:
         with:
           name: package-${{ matrix.series }}
           path: |
-            build/nekobox_*.deb
-            build/nekobox_*.dsc
-            build/nekobox_*.debian.tar.xz
+            build/upload/${{ matrix.series }}/*.deb
+            build/upload/${{ matrix.series }}/*.dsc
+            build/upload/${{ matrix.series }}/*.debian.tar.xz
+            build/upload/${{ matrix.series }}/*_source.changes
+            build/upload/${{ matrix.series }}/*_source.buildinfo
+            build/upload/${{ matrix.series }}/source.json
+            build/upload/${{ matrix.series }}/build.log
+            build/upload/${{ matrix.series }}/dpkg-source-extract.log
             build/offline-build.log
+            build/prepare-source.log
           if-no-files-found: warn
 
-  recipe:
-    name: Validate the Launchpad recipe
-    needs: [plan, prepare]
-    if: |
-      always() &&
-      needs.plan.result == 'success' &&
-      needs.plan.outputs.validate == 'true' &&
-      (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Use the runner temp directory
-        run: echo "TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
-
-      - name: Download the packaging patch
-        if: needs.plan.outputs.update == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: release-patch
-          path: build
-
-      - name: Apply the packaging patch
-        if: needs.plan.outputs.update == 'true'
-        run: |
-          set -euo pipefail
-          git apply --binary build/update.patch
-
-      - name: Install recipe tools
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            devscripts dpkg-dev fakeroot git-build-recipe pristine-tar xz-utils
-
-      - name: Assemble each series from the recipe
-        run: |
-          set -euo pipefail
-          scripts/validate-recipe.sh --series "${{ needs.plan.outputs.series }}"
-
   publish:
-    name: Publish or verify the Launchpad mirror
-    needs: [plan, prepare, validate, recipe]
+    name: Upload signed sources to Launchpad
+    needs: [plan, prepare, validate]
     if: |
       always() &&
       needs.plan.result == 'success' &&
       needs.validate.result == 'success' &&
-      needs.recipe.result == 'success' &&
-      (needs.plan.outputs.update == 'true' || needs.plan.outputs.mode == 'mirror') &&
-      (github.event_name == 'schedule' || github.event_name == 'push' || inputs.publish == true || inputs.mode == 'mirror') &&
+      (needs.plan.outputs.update == 'true' || needs.plan.outputs.mode == 'reconcile') &&
+      (github.event_name == 'schedule' || github.event_name == 'push' || inputs.publish == true || inputs.mode == 'reconcile') &&
       needs.plan.outputs.mode != 'validate'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -417,8 +380,6 @@ jobs:
     env:
       MODE: ${{ needs.plan.outputs.mode }}
       LP_WRITE: ${{ github.event_name == 'schedule' || github.event_name == 'push' || inputs.publish == true }}
-      LP_PUSH_URL: git+ssh://oblivionw26@git.launchpad.net/~oblivionw26/+git/nekobox-ppa
-      LP_HOST_KEY_FINGERPRINT: SHA256:UNOzlP66WpDuEo34Wgs8mewypV0UzqHLsIFoqwe8dYo
       VERSION: ${{ needs.plan.outputs.version }}
       BASE_VERSION: ${{ needs.plan.outputs.base_version }}
     steps:
@@ -452,117 +413,139 @@ jobs:
           set -euo pipefail
           git apply --binary build/update.patch
 
-      - name: Commit the validated packaging update
+      - name: Install source upload tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            devscripts dpkg-dev fakeroot debhelper xz-utils gnupg dput python3-launchpadlib
+
+      - name: Plan missing uploads
+        id: uploads
+        run: |
+          set -euo pipefail
+          python3 scripts/source-upload.py plan --json build/upload-plan.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          plan = json.loads(Path("build/upload-plan.json").read_text())
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"needed={'true' if plan['needed_series'] else 'false'}\n")
+          Path("build/needed-series").write_text("\n".join(plan["needed_series"]) + "\n")
+          PY
+
+      - name: Download validated source identities
+        uses: actions/download-artifact@v4
+        with:
+          pattern: source-identity-*
+          path: build/validated
+
+      - name: Import the upload signing key and check Launchpad registration
+        if: env.LP_WRITE == 'true' && steps.uploads.outputs.needed == 'true'
+        env:
+          LP_GPG_PRIVATE_KEY: ${{ secrets.LP_GPG_PRIVATE_KEY }}
+          LP_GPG_PASSPHRASE: ${{ secrets.LP_GPG_PASSPHRASE }}
+          LP_GPG_KEY_ID: ${{ secrets.LP_GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          [ -n "$LP_GPG_PRIVATE_KEY" ] || { echo "LP_GPG_PRIVATE_KEY is not configured" >&2; exit 1; }
+          umask 077
+          export GNUPGHOME="$RUNNER_TEMP/nekobox-signing"
+          mkdir -m 700 "$GNUPGHOME"
+          printf '%s\n' "$LP_GPG_PRIVATE_KEY" | gpg --batch --import
+          printf '%s' "$LP_GPG_PASSPHRASE" >"$GNUPGHOME/passphrase"
+          python3 - <<'PY'
+          import os
+          import subprocess
+          lines = subprocess.check_output(
+              ["gpg", "--batch", "--with-colons", "--list-secret-keys"], text=True
+          ).splitlines()
+          keys = []
+          primary = False
+          for line in lines:
+              fields = line.split(":")
+              if fields[0] == "sec":
+                  primary = True
+              elif fields[0] == "fpr" and primary:
+                  keys.append(fields[9])
+                  primary = False
+          if len(keys) != 1:
+              raise SystemExit("Import exactly one source-upload signing key")
+          fingerprint = keys[0]
+          expected = os.environ.get("LP_GPG_KEY_ID", "").replace(" ", "").upper()
+          if expected and expected != fingerprint:
+              raise SystemExit("LP_GPG_KEY_ID does not match the imported primary fingerprint")
+          subprocess.run(
+              ["python3", "scripts/source-upload.py", "preflight", "--fingerprint", fingerprint],
+              check=True,
+          )
+          with open(os.environ["GITHUB_ENV"], "a") as out:
+              out.write(f"SIGNING_KEY_FINGERPRINT={fingerprint}\n")
+              out.write(f"GNUPGHOME={os.environ['GNUPGHOME']}\n")
+              out.write(f"LP_GPG_PASSPHRASE_FILE={os.environ['GNUPGHOME']}/passphrase\n")
+          PY
+
+      - name: Assemble and sign the validated source uploads
+        if: env.LP_WRITE == 'true' && steps.uploads.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          while IFS= read -r series; do
+            [ -n "$series" ] || continue
+            python3 scripts/source-upload.py prepare --plan build/upload-plan.json --series "$series"
+            python3 - "$series" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          series = sys.argv[1]
+          expected = json.loads(Path(f"build/validated/source-identity-{series}/prepare.json").read_text())
+          actual = json.loads(Path(f"build/upload/{series}/prepare.json").read_text())
+          for key in ("target_version", "distribution", "debian_manifest"):
+              if actual[key] != expected[key]:
+                  raise SystemExit(f"{series}: validated source changed: {key}")
+          if actual["orig"]["sha256"] != expected["orig"]["sha256"]:
+              raise SystemExit(f"{series}: validated orig tarball changed")
+          PY
+            python3 scripts/source-upload.py sign --plan build/upload-plan.json \
+              --series "$series" --keyid "$SIGNING_KEY_FINGERPRINT"
+          done <build/needed-series
+
+      - name: Commit and push the validated packaging update
         if: needs.plan.outputs.update == 'true' && env.LP_WRITE == 'true'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add upstream.env debian/changelog debian/third-party/
           git commit -m "Update upstream to $VERSION" -m \
-            "Validated on noble, resolute and stonking before publication."
-          git show --stat --oneline HEAD
+            "Validated on noble, resolute and stonking before source upload."
+          git push origin HEAD:refs/heads/main
 
-      - name: Configure the Launchpad SSH identity
-        if: env.LP_WRITE == 'true'
-        env:
-          LP_SSH_PRIVATE_KEY: ${{ secrets.LP_SSH_PRIVATE_KEY }}
+      - name: Upload missing sources
+        if: env.LP_WRITE == 'true' && steps.uploads.outputs.needed == 'true'
         run: |
           set -euo pipefail
-          [ -n "$LP_SSH_PRIVATE_KEY" ] || { echo "LP_SSH_PRIVATE_KEY is empty" >&2; exit 1; }
-          umask 077
-          key="$RUNNER_TEMP/lp_ed25519"
-          known="$RUNNER_TEMP/lp_known_hosts"
-          printf '%s\n' "$LP_SSH_PRIVATE_KEY" >"$key"
-          chmod 600 "$key"
-          keyscan=$(ssh-keyscan -t rsa git.launchpad.net 2>/dev/null) \
-            || { echo "ssh-keyscan failed" >&2; exit 1; }
-          fingerprint=$(printf '%s\n' "$keyscan" | ssh-keygen -lf - -E sha256 | awk '{print $2}' | sort -u)
-          if [ "$fingerprint" != "$LP_HOST_KEY_FINGERPRINT" ]; then
-            echo "Launchpad host key fingerprint mismatch" >&2
-            exit 1
+          failed=0
+          while IFS= read -r series; do
+            [ -n "$series" ] || continue
+            if ! python3 scripts/source-upload.py upload --plan build/upload-plan.json \
+              --series "$series" --json "build/upload/$series/upload.json"; then
+              echo "Source upload failed for $series; continuing with other targets" >&2
+              failed=1
+            fi
+          done <build/needed-series
+          exit "$failed"
+
+      - name: Remove signing credentials
+        if: always()
+        run: |
+          set -euo pipefail
+          home="$RUNNER_TEMP/nekobox-signing"
+          if [ -d "$home" ]; then
+            GNUPGHOME="$home" gpgconf --kill all || true
+            rm -rf "$home"
           fi
-          printf '%s\n' "$keyscan" >"$known"
-          chmod 600 "$known"
-          ssh_command="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known -o StrictHostKeyChecking=yes"
-          export GIT_SSH_COMMAND="$ssh_command"
-          echo "GIT_SSH_COMMAND=$ssh_command" >>"$GITHUB_ENV"
-          git ls-remote "$LP_PUSH_URL" HEAD >/dev/null
-
-      - name: Install the Launchpad client
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends python3-launchpadlib
-
-      - name: Preflight the Launchpad API credentials
-        if: env.LP_WRITE == 'true'
-        env:
-          LP_CREDENTIALS: ${{ secrets.LP_CREDENTIALS }}
-        run: |
-          set -euo pipefail
-          [ -n "$LP_CREDENTIALS" ] || { echo "LP_CREDENTIALS is empty" >&2; exit 1; }
-          umask 077
-          creds="$RUNNER_TEMP/lp-preflight.credentials"
-          printf '%s' "$LP_CREDENTIALS" >"$creds"
-          trap 'rm -f "$creds"' EXIT
-          export LP_CREDENTIALS_FILE="$creds"
-          BROWSER=/bin/false python3 - <<'PY'
-          import os
-          from launchpadlib.launchpad import Launchpad
-          lp = Launchpad.login_with("nekobox-ppa-ci", "production", version="devel",
-                                    credentials_file=os.environ["LP_CREDENTIALS_FILE"], timeout=30)
-          assert lp.me.name == "oblivionw26", "Unexpected Launchpad account"
-          print("Launchpad API authentication verified")
-          PY
-
-      - name: Prepare and mirror the validated refs
-        if: env.LP_WRITE == 'true'
-        run: |
-          set -euo pipefail
-          scripts/prepare-recipe.sh \
-            --output-dir "$GITHUB_WORKSPACE/build/recipe"
-          stage="$GITHUB_WORKSPACE/build/recipe/nekobox-ppa"
-          refspecs=(
-            "HEAD:refs/heads/main"
-            "refs/heads/upstream/$VERSION:refs/heads/upstream/$VERSION"
-            "refs/tags/upstream/$VERSION:refs/tags/upstream/$VERSION"
-          )
-          git fetch "$stage" \
-            "refs/heads/upstream/$VERSION:refs/heads/upstream/$VERSION" \
-            "refs/tags/upstream/$VERSION:refs/tags/upstream/$VERSION"
-          # Probe both destinations before changing either. Each repository's
-          # main, source branch and tag advance atomically, without force.
-          git push --atomic --dry-run origin "${refspecs[@]}"
-          git push --atomic --dry-run "$LP_PUSH_URL" "${refspecs[@]}"
-          git push --atomic origin "${refspecs[@]}"
-          git push --atomic "$LP_PUSH_URL" "${refspecs[@]}"
-          for ref in refs/heads/main "refs/heads/upstream/$VERSION" "refs/tags/upstream/$VERSION"; do
-            expected=$(git rev-parse "$ref")
-            actual=$(git ls-remote "$LP_PUSH_URL" "$ref" | awk '{print $1}')
-            [ "$actual" = "$expected" ] || { echo "Mirror mismatch: $ref" >&2; exit 1; }
-          done
-
-      - name: Update the recipe and request builds
-        env:
-          LP_CREDENTIALS: ${{ secrets.LP_CREDENTIALS }}
-        run: |
-          set -euo pipefail
-          args=(--mode "$MODE" --version "$VERSION" --base-version "$BASE_VERSION" --series "${{ needs.plan.outputs.series }}" --json build/lp-publish.json)
-          if [ "$LP_WRITE" = "true" ]; then
-            [ -n "$LP_CREDENTIALS" ] || { echo "LP_CREDENTIALS is empty" >&2; exit 1; }
-            umask 077
-            creds="$RUNNER_TEMP/lp.credentials"
-            printf '%s' "$LP_CREDENTIALS" >"$creds"
-            chmod 600 "$creds"
-            trap 'rm -f "$creds"' EXIT
-            export LP_CREDENTIALS_FILE="$creds"
-            export LP_APPLICATION_NAME="nekobox-ppa-ci"
-            BROWSER=/bin/false python3 scripts/launchpad-publish.py \
-              "${args[@]}" --application-name "$LP_APPLICATION_NAME"
-          else
-            python3 scripts/launchpad-publish.py "${args[@]}" --dry-run
-          fi
+          printf 'GNUPGHOME=\nLP_GPG_PASSPHRASE_FILE=\nSIGNING_KEY_FINGERPRINT=\n' >>"$GITHUB_ENV"
 
       - name: Verify the published artifacts
         run: |
@@ -580,18 +563,14 @@ jobs:
           if [ -f build/published-verification.md ]; then
             cat build/published-verification.md >>"$GITHUB_STEP_SUMMARY"
           fi
-          if [ -f build/lp-publish.json ]; then
-            python3 - <<'PY' >>"$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >>"$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
-          data = json.loads(Path("build/lp-publish.json").read_text())
-          print("\n### Launchpad\n")
-          print(f"- recipe updated: `{data.get('recipe_updated')}`")
-          for series, entry in data.get("series", {}).items():
-              detail = entry.get("build") or entry.get("published_version") or entry.get("buildstate", "")
-              print(f"- {series}: `{entry.get('action')}` {detail}")
+          for path in sorted(Path("build/upload").glob("*/upload.json")):
+              entry = json.loads(path.read_text())
+              print(f"- {path.parent.name}: `{entry.get('action')}` "
+                    f"(archive: {entry.get('archive_status', 'not yet recorded')})")
           PY
-          fi
 
       - name: Upload publication evidence
         if: always()
@@ -599,8 +578,18 @@ jobs:
         with:
           name: publication
           path: |
-            build/lp-publish.json
+            build/upload-plan.json
+            build/upload/*/upload.json
+            build/upload/*/source.json
+            build/upload/*/*.dsc
+            build/upload/*/*.debian.tar.xz
+            build/upload/*/*.orig.tar.*
+            build/upload/*/*_source.changes
+            build/upload/*/*_source.buildinfo
+            build/upload/*/dput.log
+            build/upload/*/build.log
+            build/upload/*/dpkg-source-extract.log
+            build/prepare-source.log
             build/published-verification.json
             build/published-verification.md
-            build/recipe/MANIFEST
           if-no-files-found: warn

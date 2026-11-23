@@ -2,23 +2,35 @@
 # Prepare the ignored build/ tree for this source package.
 #
 # Usage: scripts/prepare-source.sh [--refresh-download] [--repack]
+#                                  [--orig-file PATH --orig-sha256 HEX]
 #
 #   --refresh-download  ignore the copy in downloads/ and fetch again
 #   --repack            always repack the orig tarball under nekobox-<version>/
 #                       instead of reusing the upstream tarball bytes
+#   --orig-file PATH    use this already-published orig tarball instead of the
+#                       pinned upstream download.  This repository's policy is
+#                       to reuse the archived bytes for an upstream version
+#                       when a packaging revision is uploaded (a different
+#                       compression name is technically possible, but reuse is
+#                       intentional); the caller verifies them against the
+#                       published .dsc and this re-checks the bytes here.
+#   --orig-sha256 HEX   required with --orig-file
 #
 # Steps:
 #   1. download the pinned upstream release into downloads/ (cached) and
-#      verify UPSTREAM_SHA256 from upstream.env;
+#      verify UPSTREAM_SHA256 from upstream.env; with --orig-file, verify the
+#      supplied archived orig instead and skip the upstream download;
 #   2. unpack it under build/nekobox-<version>/ and overlay ./debian/;
-#   3. create build/nekobox_<version>.orig.tar.xz: the upstream bytes are
+#   3. create build/nekobox_<version>.orig.tar.*: the upstream bytes are
 #      reused unchanged when dpkg-source accepts them, otherwise the same file
-#      contents are repacked under the Debian top-level directory name;
+#      contents are repacked under the Debian top-level directory name.  With
+#      --orig-file the supplied bytes are copied unchanged;
 #   4. run dpkg-source -b, then re-extract the generated source package to
 #      prove it is complete (debian/ and upstream sources both present).
 #
-# Only the pinned release is used as source. reference/ is a comparison clone
-# and is never read by this script. No binary package is built here.
+# Only the pinned release (or the explicitly supplied archived orig) is used
+# as source. reference/ is a comparison clone and is never read by this script.
+# No binary package is built here.
 set -euo pipefail
 
 umask 022
@@ -38,15 +50,34 @@ done
 
 refresh=0
 force_repack=0
+orig_file=
+orig_sha256=
 while [ $# -gt 0 ]; do
     case "$1" in
         --refresh-download) refresh=1 ;;
         --repack) force_repack=1 ;;
-        -h|--help) sed -n '2,21p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --orig-file)
+            shift
+            [ $# -gt 0 ] || die "--orig-file needs a path"
+            orig_file=$1
+            ;;
+        --orig-sha256)
+            shift
+            [ $# -gt 0 ] || die "--orig-sha256 needs a value"
+            orig_sha256=$1
+            ;;
+        -h|--help) sed -n '2,27p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
     shift
 done
+
+if [ -n "$orig_file" ] && [ -z "$orig_sha256" ]; then
+    die "--orig-file requires --orig-sha256"
+fi
+if [ -z "$orig_file" ] && [ -n "$orig_sha256" ]; then
+    die "--orig-sha256 is only valid with --orig-file"
+fi
 
 for tool in curl sha256sum tar xz dpkg-source; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool not found: $tool"
@@ -56,48 +87,85 @@ cache_dir=$repo_root/downloads
 build_dir=$repo_root/build
 tarball=$cache_dir/$UPSTREAM_TARBALL
 tree=$build_dir/nekobox-$UPSTREAM_VERSION
-orig=$build_dir/nekobox_$UPSTREAM_VERSION.orig.tar.xz
 stage=$build_dir/.stage-$UPSTREAM_VERSION
 roundtrip=$build_dir/.roundtrip
 source_log=$build_dir/dpkg-source.log
+safe_orig=
 
-cleanup() { rm -rf "$stage" "$roundtrip"; }
+cleanup() {
+    rm -rf "$stage" "$roundtrip"
+    if [ -n "$safe_orig" ]; then rm -f "$safe_orig"; fi
+}
 trap cleanup EXIT
 
 mkdir -p "$cache_dir" "$build_dir"
 
 # ---------------------------------------------------------------- download ---
-if [ "$refresh" -eq 1 ]; then
-    rm -f "$tarball"
-fi
-if [ ! -f "$tarball" ]; then
-    note "downloading $UPSTREAM_URL"
-    tmp=$tarball.part
-    curl --fail --location --retry 3 --retry-delay 2 --output "$tmp" \
-        "$UPSTREAM_URL" \
-        || die "download failed (set http_proxy/https_proxy when the network needs a proxy)"
-    mv -f "$tmp" "$tarball"
+if [ -n "$orig_file" ]; then
+    [ -f "$orig_file" ] || die "archived orig tarball not found: $orig_file"
+    note "verifying archived orig $orig_file"
+    actual=$(sha256sum "$orig_file" | awk '{print $1}')
+    [ "$actual" = "$orig_sha256" ] \
+        || die "sha256 mismatch for $orig_file: expected $orig_sha256, got $actual"
+    case "$orig_file" in
+        *.orig.tar.xz) orig_ext=.tar.xz ;;
+        *.orig.tar.gz) orig_ext=.tar.gz ;;
+        *.orig.tar.bz2) orig_ext=.tar.bz2 ;;
+        *.orig.tar.lzma) orig_ext=.tar.lzma ;;
+        *) die "unrecognised orig tarball extension: $orig_file" ;;
+    esac
+    # The input may live at build/nekobox_<version>.orig.tar.gz, which
+    # drop_source_artifacts() removes.  Keep a verified private copy first so
+    # the natural CLI path cannot delete its own input.
+    safe_orig=$(mktemp "$build_dir/.archived-orig.XXXXXX")
+    cp -f "$orig_file" "$safe_orig"
+    orig_file=$safe_orig
+    orig=$build_dir/nekobox_$UPSTREAM_VERSION.orig$orig_ext
 else
-    note "using cached $tarball"
-fi
+    orig=$build_dir/nekobox_$UPSTREAM_VERSION.orig.tar.xz
+    if [ "$refresh" -eq 1 ]; then
+        rm -f "$tarball"
+    fi
+    if [ ! -f "$tarball" ]; then
+        note "downloading $UPSTREAM_URL"
+        tmp=$tarball.part
+        curl --fail --location --retry 3 --retry-delay 2 --output "$tmp" \
+            "$UPSTREAM_URL" \
+            || die "download failed (set http_proxy/https_proxy when the network needs a proxy)"
+        mv -f "$tmp" "$tarball"
+    else
+        note "using cached $tarball"
+    fi
 
-note "verifying sha256"
-actual=$(sha256sum "$tarball" | awk '{print $1}')
-[ "$actual" = "$UPSTREAM_SHA256" ] \
-    || die "sha256 mismatch for $tarball: expected $UPSTREAM_SHA256, got $actual"
+    note "verifying sha256"
+    actual=$(sha256sum "$tarball" | awk '{print $1}')
+    [ "$actual" = "$UPSTREAM_SHA256" ] \
+        || die "sha256 mismatch for $tarball: expected $UPSTREAM_SHA256, got $actual"
+fi
 
 # ----------------------------------------------------------------- unpack ---
-note "unpacking upstream release"
+note "unpacking source"
 rm -rf "$stage" "$tree"
 mkdir -p "$stage"
-tar -xJf "$tarball" -C "$stage"
-[ -d "$stage/$UPSTREAM_TOP_DIR" ] \
-    || die "tarball has no top-level directory $UPSTREAM_TOP_DIR"
-if [ -e "$stage/$UPSTREAM_TOP_DIR/debian" ]; then
-    note "discarding upstream debian/ (packaging comes from this repository)"
-    rm -rf "$stage/$UPSTREAM_TOP_DIR/debian"
+if [ -n "$orig_file" ]; then
+    tar -xf "$orig_file" -C "$stage"
+    mapfile -t tops < <(tar -tf "$orig_file" | sed -e 's#^\./##' -e 's#/.*##' | LC_ALL=C sort -u)
+    [ "${#tops[@]}" -eq 1 ] && [ -n "${tops[0]}" ] \
+        || die "archived orig does not have exactly one top-level directory"
+    orig_top=${tops[0]}
+else
+    tar -xJf "$tarball" -C "$stage"
+    orig_top=$UPSTREAM_TOP_DIR
 fi
-mv "$stage/$UPSTREAM_TOP_DIR" "$stage/nekobox-$UPSTREAM_VERSION"
+[ -d "$stage/$orig_top" ] \
+    || die "tarball has no top-level directory $orig_top"
+if [ -e "$stage/$orig_top/debian" ]; then
+    note "discarding upstream debian/ (packaging comes from this repository)"
+    rm -rf "$stage/$orig_top/debian"
+fi
+if [ "$orig_top" != "nekobox-$UPSTREAM_VERSION" ]; then
+    mv "$stage/$orig_top" "$stage/nekobox-$UPSTREAM_VERSION"
+fi
 
 note "installing source tree $tree"
 cp -a "$stage/nekobox-$UPSTREAM_VERSION" "$tree"
@@ -111,7 +179,8 @@ build_source() {
 }
 
 drop_source_artifacts() {
-    rm -f "$build_dir"/*.dsc "$build_dir"/*.debian.tar.* "$orig"
+    rm -f "$build_dir"/*.dsc "$build_dir"/*.debian.tar.* \
+          "$build_dir"/nekobox_"$UPSTREAM_VERSION".orig.tar.*
 }
 
 repack_orig() {
@@ -126,8 +195,15 @@ repack_orig() {
 }
 
 reused=0
+source_kind='upstream bytes, unchanged'
 drop_source_artifacts
-if [ "$force_repack" -eq 0 ]; then
+if [ -n "$orig_file" ]; then
+    note "installing the archived orig bytes unchanged as $orig"
+    cp -f "$orig_file" "$orig"
+    build_source || die "dpkg-source -b failed with the archived orig; see $source_log"
+    reused=1
+    source_kind='archived orig bytes, unchanged'
+elif [ "$force_repack" -eq 0 ]; then
     note "trying the upstream tarball bytes unchanged as $orig"
     cp -f "$tarball" "$orig"
     if build_source; then
@@ -141,6 +217,7 @@ if [ "$reused" -eq 0 ]; then
     drop_source_artifacts
     repack_orig
     build_source || die "dpkg-source -b failed after repacking; see $source_log"
+    source_kind='repacked, contents unchanged'
     first=$( { tar -tJf "$orig" || true; } | awk 'NR == 1 { print; exit }')
     case "$first" in
         "nekobox-$UPSTREAM_VERSION/"*)
@@ -184,7 +261,7 @@ cat <<EOF
 Prepared source tree:  $tree
 Orig tarball:          $orig
   sha256  $(sha256sum "$orig" | awk '{print $1}')
-  source  $(if [ "$reused" -eq 1 ]; then echo 'upstream bytes, unchanged'; else echo 'repacked, contents unchanged'; fi)
+  source  $source_kind
 Source package:        $dsc
   verified by re-extracting it and checking debian/ plus core/server/go.mod
 

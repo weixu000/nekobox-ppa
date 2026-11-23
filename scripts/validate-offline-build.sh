@@ -2,6 +2,7 @@
 # Validate the prepared source on one Ubuntu series inside Docker.
 #
 # Usage: scripts/validate-offline-build.sh --series noble --base ubuntu:24.04
+#        [--tree PATH --version VERSION]
 #
 # The container installs the series' debian/control Build-Depends (resolved
 # from that series' archive, including -security), is committed, and then the
@@ -17,10 +18,14 @@ note() { printf '==> %s\n' "$*"; }
 
 series=
 base=
+source_tree=
+package_version=
 while [ $# -gt 0 ]; do
     case "$1" in
         --series) shift; series=${1:-} ;;
         --base) shift; base=${1:-} ;;
+        --tree) shift; source_tree=${1:-} ;;
+        --version) shift; package_version=${1:-} ;;
         -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -35,8 +40,12 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 # shellcheck source=../upstream.env
 . "$repo_root/upstream.env"
 
-tree=nekobox-$UPSTREAM_VERSION
-base_version=$UPSTREAM_VERSION-$DEBIAN_REVISION
+source_tree=$(realpath "${source_tree:-$repo_root/build/nekobox-$UPSTREAM_VERSION}")
+case "$source_tree" in
+    "$repo_root/build/"*) tree=${source_tree#"$repo_root/build/"} ;;
+    *) die "--tree must be inside $repo_root/build/" ;;
+esac
+base_version=${package_version:-$UPSTREAM_VERSION-$DEBIAN_REVISION}
 image=${IMAGE:-nekobox-ppa-validate:$series}
 container=nekobox-ppa-validate-$series-$$
 [ -d "$repo_root/build/$tree/debian" ] \
@@ -86,10 +95,10 @@ docker run --rm "$image" bash -c 'command -v dpkg-buildpackage >/dev/null' \
 note "built validation image $image"
 
 note "building the package offline"
-IMAGE="$image" JOBS="${JOBS:-$(nproc)}" \
+IMAGE="$image" JOBS="${JOBS:-$(nproc)}" BUILD_TREE="$source_tree" \
     "$repo_root/scripts/build-in-docker.sh"
 
-deb=$(find "$repo_root/build" -maxdepth 1 -type f \
+deb=$(find "$(dirname "$source_tree")" -maxdepth 1 -type f \
     -name "nekobox_${base_version}_*.deb" -print -quit)
 [ -n "$deb" ] || die "no nekobox .deb for $base_version was produced"
 
@@ -99,7 +108,7 @@ docker run --rm --network=none \
     --volume "$repo_root/scripts:/scripts:ro" \
     --volume "$repo_root/debian/third-party/INDEX.txt:/expected/INDEX.txt:ro" \
     "$image" bash /scripts/smoke-test-package.sh \
-        --deb "/build/$(basename "$deb")" \
+        --deb "/build/${deb#"$repo_root/build/"}" \
         --version "$base_version" \
         --expected-index /expected/INDEX.txt \
         --series "$series"

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Verify the NekoBox binary and source published in the Launchpad PPA.
 
-The PPA's Packages and Sources indexes are the authority.  For each enabled
-series this script:
+The PPA's Packages and Sources indexes are the authority.  The supported
+targets are defined here explicitly (noble, resolute, stonking); the verifier
+does not read the legacy Launchpad git recipe.  For each target this script:
 
-  * discovers the enabled series from the public Launchpad recipe settings and
-    rejects any series outside the supported targets;
   * downloads dists/<series>/main/binary-amd64/Packages.gz;
   * finds the published version derived from the current upstream.env pin;
   * verifies the .deb against every strong digest the index supplies (SHA256
@@ -15,17 +14,17 @@ series this script:
   * extracts the .deb and checks that the GUI, matching core and generated
     third-party notice index are present.
 
-When a series has not published the version yet, the public Launchpad API is
-consulted for the real build/upload state.  A terminal build failure (failed
-to build/upload, chroot problem, superseded, cancelled, or an unrecognised
-state) fails immediately with the concrete build URL.  An ordinary queued or
-uploading build stays "pending" so a scheduled run can retry, but a pending
+When a series has not published the version yet, the public Launchpad archive
+API is consulted for the signed source upload and binary build records.  A
+terminal failure (deleted source, failed to build/upload, chroot problem,
+superseded build, cancelled build, or an unrecognised state) fails
+immediately with the concrete record URL.  An ordinary queued, uploading or
+pending source stays "pending" so a scheduled run can retry, but a pending
 state that has not moved for --max-pending-hours (default 24) becomes a
-"stale" failure.  A missing build request after the recipe declares the
-version is treated the same way, and if the recipe has not even been updated
-to the pinned version the pin's commit age is used.  A scheduled run treats
-ordinary pending as success; pass --require-published for a manual
-verification that must fail.
+"stale" failure.  A version with no recorded upload at all is also pending,
+and becomes stale once the pin's commit is older than the same limit.  A
+scheduled run treats ordinary pending as success; pass --require-published for
+a manual verification that must fail.
 
 Usage:
     scripts/verify-published.py
@@ -57,16 +56,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PPA_BASE = "https://ppa.launchpadcontent.net/oblivionw26/nekobox/ubuntu"
 ARCH = "amd64"
 CHUNK = 1024 * 1024
 MAX_DOWNLOAD = 512 * 1024 * 1024
 STRONG_DIGESTS = ("SHA256", "SHA512")
 
-# The supported build targets.  The recipe's actual series set is discovered
-# from Launchpad; any series outside this map is rejected rather than silently
-# becoming a new target.
+# The supported build targets, in publication order.  A new Launchpad target
+# must be added here deliberately; nothing is discovered from the legacy git
+# recipe.
 KNOWN_SERIES: dict[str, dict[str, str]] = {
     "noble": {"base": "ubuntu:24.04", "suffix": "~ubuntu24.04.1"},
     "resolute": {"base": "ubuntu:26.04", "suffix": "~ubuntu26.04.1"},
@@ -75,7 +74,6 @@ KNOWN_SERIES: dict[str, dict[str, str]] = {
 SERIES = tuple(KNOWN_SERIES)
 
 ARCHIVE = "~oblivionw26/+archive/ubuntu/nekobox"
-RECIPE = "~oblivionw26/+recipe/nekobox"
 DEFAULT_MAX_PENDING_HOURS = 24.0
 
 VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.+~:-]{0,127}$")
@@ -83,10 +81,6 @@ FILENAME_RE = re.compile(r"^pool/[A-Za-z0-9.+~_/-]+\.deb$")
 POOL_RE = re.compile(r"^pool/[A-Za-z0-9.+~_/-]+$")
 DSC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+~_:-]*\.dsc$")
 SOURCE_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+~_:-]*$")
-RECIPE_DEB_VERSION_RE = re.compile(
-    r"^#\s*git-build-recipe\s+format\s+\S+\s+deb-version\s+(\S+)\s*$",
-    re.MULTILINE,
-)
 
 # Launchpad build states, from the public API documentation.
 BUILD_FAILURES = frozenset(
@@ -109,7 +103,11 @@ BUILD_PENDING = frozenset(
         "Successfully built",
     }
 )
-SOURCE_ACTIVE = frozenset({"Published", "Pending"})
+# An uploaded source first appears as Pending and later as Published.  Only an
+# explicitly removed upload is a terminal source failure; a Superseded record
+# may simply have been replaced by a newer upload of the same version.
+SOURCE_ACTIVE = ("Published", "Pending")
+SOURCE_FAILURE = ("Deleted", "Obsolete")
 
 FILE_FIELDS = {
     "Files": "MD5",
@@ -150,14 +148,6 @@ class SourceEvidence:
     made_pending: datetime | None = None
     published: datetime | None = None
     url: str | None = None
-    builds: tuple[BuildEvidence, ...] = ()
-
-
-@dataclass(frozen=True)
-class RecipeEvidence:
-    url: str | None = None
-    deb_version: str | None = None
-    changed: datetime | None = None
     builds: tuple[BuildEvidence, ...] = ()
 
 
@@ -290,46 +280,12 @@ def series_from_link(link: Any) -> str | None:
     return name or None
 
 
-def parse_recipe_deb_version(text: str) -> str | None:
-    match = RECIPE_DEB_VERSION_RE.search(text)
-    return match.group(1) if match else None
-
-
 def build_kind(state: str) -> str:
     if state in BUILD_FAILURES:
         return "failure"
     if state in BUILD_PENDING:
         return "pending"
     return "unknown"
-
-
-def discover_series(
-    links: Iterable[str],
-    supported: dict[str, Any] = KNOWN_SERIES,
-) -> list[str]:
-    """Return the enabled series from the recipe's distroseries setting.
-
-    Unknown series are a hard error: a new Launchpad target must be added to
-    the supported map deliberately, not verified halfway.
-    """
-    seen: list[str] = []
-    for link in links:
-        series = series_from_link(link)
-        if series is None:
-            continue
-        if series not in seen:
-            seen.append(series)
-    if not seen:
-        raise UsageError(
-            "the Launchpad recipe has no enabled series"
-        )
-    unknown = [series for series in seen if series not in supported]
-    if unknown:
-        raise UsageError(
-            "Launchpad recipe contains unsupported series: "
-            f"{', '.join(unknown)} (supported: {', '.join(supported)})"
-        )
-    return [series for series in supported if series in seen]
 
 
 def normalize_build(build: Any, series: str | None = None) -> BuildEvidence:
@@ -356,19 +312,22 @@ def normalize_source(source: Any) -> SourceEvidence:
     )
 
 
-def recipe_evidence(recipe: Any) -> RecipeEvidence:
-    builds = tuple(normalize_build(build) for build in recipe.builds)
-    return RecipeEvidence(
-        url=getattr(recipe, "web_link", None),
-        deb_version=parse_recipe_deb_version(recipe.recipe_text),
-        changed=parse_timestamp(getattr(recipe, "date_last_modified", None)),
-        builds=builds,
-    )
-
-
 def _latest_time(*values: datetime | None) -> datetime | None:
     present = [value for value in values if value is not None]
     return max(present) if present else None
+
+
+def _newest_source(sources: Iterable[Any]) -> Any:
+    """Return the most recent of several matching source publications."""
+
+    def timestamp(source: Any) -> datetime:
+        return _latest_time(
+            parse_timestamp(getattr(source, "date_published", None)),
+            parse_timestamp(getattr(source, "date_created", None)),
+            parse_timestamp(getattr(source, "date_made_pending", None)),
+        ) or datetime.min.replace(tzinfo=timezone.utc)
+
+    return max(sources, key=timestamp)
 
 
 def _decision(status: str, detail: str, evidence: dict[str, Any]) -> dict[str, Any]:
@@ -405,7 +364,6 @@ def classify_publication(
     base_version: str,
     source: SourceEvidence | None,
     builds: Iterable[BuildEvidence],
-    recipe: RecipeEvidence,
     now: datetime,
     max_pending_hours: float,
     pin_committed: datetime | None = None,
@@ -419,17 +377,6 @@ def classify_publication(
     relevant = list(builds)
     if source:
         relevant.extend(source.builds)
-    if recipe.deb_version == base_version and recipe.changed is not None:
-        # Recipe builds do not expose the derived version.  A build created
-        # around the last recipe change is the build of the declared version.
-        window = recipe.changed - timedelta(hours=1)
-        relevant.extend(
-            build
-            for build in recipe.builds
-            if build.series == series
-            and build.created is not None
-            and build.created >= window
-        )
     unique: dict[tuple[Any, ...], BuildEvidence] = {}
     for build in relevant:
         key = (build.url, build.state, build.created, build.version)
@@ -444,9 +391,6 @@ def classify_publication(
 
     evidence: dict[str, Any] = {
         "series": series,
-        "recipe_url": recipe.url,
-        "recipe_deb_version": recipe.deb_version,
-        "recipe_changed": iso_timestamp(recipe.changed),
         "source_url": source.url if source else None,
         "source_status": source.status if source else None,
         "source_created": iso_timestamp(source.created) if source else None,
@@ -460,7 +404,7 @@ def classify_publication(
     if source and source.status not in SOURCE_ACTIVE:
         return _decision(
             "failed",
-            f"Launchpad source status is {source.status}",
+            f"Launchpad source publication is {source.status}",
             evidence,
         )
 
@@ -489,7 +433,7 @@ def classify_publication(
             detail = (
                 "source is published but the Packages index does not list it yet"
             )
-        elif source and source.status == "Pending":
+        elif source is not None:
             detail = f"source was accepted; latest build is {latest.state}"
         elif latest.state == "Successfully built":
             detail = "build succeeded; waiting for upload/publication"
@@ -513,37 +457,29 @@ def classify_publication(
             detail, activity, now, max_pending_hours, evidence
         )
 
-    if recipe.deb_version == base_version:
-        detail = (
-            "the recipe declares this version but no Launchpad build was requested"
-        )
-        return _pending_or_stale(
-            detail, recipe.changed, now, max_pending_hours, evidence
-        )
-
     if (
         pin_committed is not None
         and max_pending_hours > 0
         and now - pin_committed > timedelta(hours=max_pending_hours)
     ):
+        age = now - pin_committed
         return _decision(
             "stale",
-            f"the recipe still declares "
-            f"{recipe.deb_version or 'no deb-version'}; publication of "
-            f"{base_version} never started",
+            f"no Launchpad source upload for {base_version} was recorded "
+            f"within {max_pending_hours:g}h of the pin "
+            f"({age.total_seconds() / 3600:.1f}h > {max_pending_hours:g}h)",
             evidence,
         )
     return _decision(
         "pending",
-        f"recipe declares {recipe.deb_version or 'no deb-version'}; "
-        f"publication of {base_version} has not started",
+        f"no Launchpad source upload for {base_version} is recorded yet",
         evidence,
     )
 
 
 def fetch(url: str, destination: Path, timeout: float) -> bool:
     request = urllib.request.Request(
-        url, headers={"User-Agent": "nekobox-ppa-verify-published/2"}
+        url, headers={"User-Agent": "nekobox-ppa-verify-published/3"}
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -965,7 +901,7 @@ def login_launchpad(timeout: float):
         from launchpadlib.launchpad import Launchpad
     except ImportError as exc:
         raise UsageError(
-            "launchpadlib is required for build-state checks "
+            "launchpadlib is required for archive-state checks "
             "(install python3-launchpadlib)"
         ) from exc
     socket.setdefaulttimeout(timeout)
@@ -980,15 +916,12 @@ def login_launchpad(timeout: float):
 
 
 class LaunchpadContext:
-    """Read-only view of the public archive and recipe."""
+    """Read-only view of the public PPA archive."""
 
     def __init__(self, launchpad: Any, timeout: float) -> None:
         self.launchpad = launchpad
         self.timeout = timeout
         self.archive = self._wrap(lambda: launchpad.load(ARCHIVE))
-        remote_recipe = self._wrap(lambda: launchpad.load(RECIPE))
-        self.enabled_series = self._wrap(lambda: discover_series(remote_recipe.distroseries))
-        self.recipe = self._wrap(lambda: recipe_evidence(remote_recipe))
         records = self._wrap(
             lambda: list(
                 self.archive.getBuildRecords(source_name="nekobox")
@@ -1010,37 +943,37 @@ class LaunchpadContext:
         return self._wrap(lambda: call(*args, **kwargs))
 
     def discover_series(self) -> list[str]:
-        return self.enabled_series
+        """Return the explicitly supported targets, in publication order."""
+        return list(SERIES)
 
-    def source_for(
-        self, series: str, base_version: str
-    ) -> SourceEvidence | None:
-        series_object = self._api(self.launchpad.load, f"ubuntu/{series}")
-        sources = self._wrap(
+    def _sources_for_status(self, series_object: Any, status: str) -> list[Any]:
+        return self._wrap(
             lambda: list(
                 self.archive.getPublishedSources(
                     source_name="nekobox",
                     distro_series=series_object,
                     exact_match=True,
+                    status=status,
                 )
             )
         )
-        matching = [
-            source
-            for source in sources
-            if version_matches(
-                getattr(source, "source_package_version", ""), base_version
-            )
-        ]
-        active = [
-            source
-            for source in matching
-            if getattr(source, "status", "") in SOURCE_ACTIVE
-        ]
-        chosen = active[0] if active else (matching[0] if matching else None)
-        if chosen is None:
-            return None
-        return self._wrap(lambda: normalize_source(chosen))
+
+    def source_for(
+        self, series: str, base_version: str
+    ) -> SourceEvidence | None:
+        series_object = self._api(self.launchpad.load, f"ubuntu/{series}")
+        for status in (*SOURCE_ACTIVE, *SOURCE_FAILURE):
+            matching = [
+                source
+                for source in self._sources_for_status(series_object, status)
+                if version_matches(
+                    getattr(source, "source_package_version", ""), base_version
+                )
+            ]
+            if matching:
+                chosen = _newest_source(matching)
+                return self._wrap(lambda: normalize_source(chosen))
+        return None
 
     def builds_for(
         self, series: str, base_version: str
@@ -1098,7 +1031,6 @@ def verify_series(
         base_version=base_version,
         source=launchpad.source_for(series, base_version),
         builds=launchpad.builds_for(series, base_version),
-        recipe=launchpad.recipe,
         now=now,
         max_pending_hours=max_pending_hours,
         pin_committed=pin_committed,
@@ -1135,13 +1067,11 @@ def git_commit_time(repo: Path, path: str = "upstream.env") -> datetime | None:
 
 
 def render_summary(result: dict[str, Any]) -> str:
-    recipe = result.get("recipe") or {}
     lines = [
         f"## Published PPA verification: {result['base_version']}",
         "",
-        f"- recipe: {recipe.get('url') or '-'} "
-        f"(`{recipe.get('deb_version') or 'no deb-version'}`)",
-        f"- enabled series: {', '.join(result.get('enabled_series', [])) or '-'}",
+        f"- PPA: {result.get('ppa') or '-'}",
+        f"- targets: {', '.join(result.get('enabled_series', [])) or '-'}",
         "",
         "| Series | Status | Published version / detail | SHA256 |",
         "| --- | --- | --- | --- |",
@@ -1157,11 +1087,7 @@ def render_summary(result: dict[str, Any]) -> str:
             sha256 = f"`{entry['sha256']}`"
         else:
             detail = entry.get("detail", "").replace("|", "\\|")
-            evidence_url = (
-                entry.get("build_url")
-                or entry.get("source_url")
-                or entry.get("recipe_url")
-            )
+            evidence_url = entry.get("build_url") or entry.get("source_url")
             if evidence_url:
                 detail += f" ([evidence]({evidence_url}))"
             sha256 = "-"
@@ -1186,24 +1112,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise UsageError("--timeout must be greater than zero")
 
     now = datetime.now(timezone.utc)
-    pin_from_env = not args.version and not args.base_version
+    env_base_version = (
+        f"{env.get('UPSTREAM_VERSION', '')}-{revision}"
+        if env.get("UPSTREAM_VERSION") and revision
+        else ""
+    )
+    # The pin's commit age only describes this version.  An explicitly
+    # requested different version must not inherit it.
     pin_committed = (
         git_commit_time(repo)
-        if pin_from_env and args.max_pending_hours > 0
+        if base_version == env_base_version and args.max_pending_hours > 0
         else None
     )
 
     launchpad = collect_launchpad_context(args.timeout)
     enabled = launchpad.discover_series()
-    unknown_enabled = [
-        series for series in enabled if series not in KNOWN_SERIES
-    ]
-    if unknown_enabled:
-        raise UsageError(
-            "Launchpad recipe contains unsupported series: "
-            f"{', '.join(unknown_enabled)} "
-            f"(supported: {', '.join(KNOWN_SERIES)})"
-        )
 
     expected: list[str] = []
     if args.expect_series:
@@ -1221,8 +1144,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
         if set(enabled) != set(expected):
             raise UsageError(
-                "enabled recipe series do not match --expect-series: "
-                f"Launchpad={', '.join(enabled)}; "
+                "supported target set does not match --expect-series: "
+                f"targets={', '.join(enabled)}; "
                 f"expected={', '.join(expected)}"
             )
 
@@ -1239,9 +1162,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         unknown = [item for item in selected if item not in KNOWN_SERIES]
         if unknown:
             raise UsageError(f"unknown series: {', '.join(unknown)}")
-        # An enabled series that is not selected is an explicit local filter;
-        # an enabled series outside the supported map was rejected above by
-        # discover_series().
+        # A supported target that is not selected is an explicit local filter.
     if not selected:
         raise UsageError("no series selected")
 
@@ -1290,12 +1211,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "max_pending_hours": args.max_pending_hours,
         "ok": not failed and not (pending and args.require_published),
         "series": selected,
+        # enabled_series is kept for workflow compatibility; it is now the
+        # explicit supported target set, not a Launchpad recipe setting.
         "enabled_series": enabled,
-        "recipe": {
-            "url": launchpad.recipe.url,
-            "deb_version": launchpad.recipe.deb_version,
-            "changed": iso_timestamp(launchpad.recipe.changed),
-        },
+        "targets": enabled,
         "results": results,
     }
     if args.json:
@@ -1324,11 +1243,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--series",
         default="auto",
-        help="'auto' uses the Launchpad recipe's enabled series",
+        help="'auto' verifies every explicitly supported target",
     )
     parser.add_argument(
         "--expect-series",
-        help="require the enabled recipe series to equal this comma-separated set",
+        help="require the supported target set to equal this comma-separated set",
     )
     parser.add_argument(
         "--cache-dir",

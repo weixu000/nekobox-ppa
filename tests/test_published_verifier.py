@@ -1,4 +1,4 @@
-"""Tests for scripts/verify-published.py and launchpad-publish helpers."""
+"""Tests for scripts/verify-published.py."""
 
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ def load(name: str, filename: str):
 
 
 vp = load("verify_published", "verify-published.py")
-lp = load("launchpad_publish", "launchpad-publish.py")
 
 
 STONKING = """Package: nekobox
@@ -134,7 +133,9 @@ class VerifyPublishedTests(unittest.TestCase):
     def test_summary_includes_pending_series(self):
         result = {
             "base_version": "1-1",
+            "ppa": vp.PPA_BASE,
             "series": ["noble", "stonking"],
+            "enabled_series": ["noble", "resolute", "stonking"],
             "results": {
                 "noble": {
                     "status": "verified",
@@ -147,6 +148,7 @@ class VerifyPublishedTests(unittest.TestCase):
         summary = vp.render_summary(result)
         self.assertIn("stonking", summary)
         self.assertIn("pending", summary)
+        self.assertIn("noble, resolute, stonking", summary)
 
     def test_summary_links_failed_build_evidence(self):
         result = {
@@ -164,6 +166,21 @@ class VerifyPublishedTests(unittest.TestCase):
         self.assertIn("failed", summary)
         self.assertIn("https://launchpad.net/build/9", summary)
 
+    def test_summary_links_failed_source_evidence(self):
+        result = {
+            "base_version": "1-1",
+            "series": ["noble"],
+            "results": {
+                "noble": {
+                    "status": "failed",
+                    "detail": "Launchpad source publication is Deleted",
+                    "source_url": "https://launchpad.net/sourcepub/9",
+                }
+            },
+        }
+        summary = vp.render_summary(result)
+        self.assertIn("https://launchpad.net/sourcepub/9", summary)
+
 
 class PublicationDecisionTests(unittest.TestCase):
     def build(self, state, hours_ago=1.0, **kwargs):
@@ -175,14 +192,6 @@ class PublicationDecisionTests(unittest.TestCase):
             **kwargs,
         )
 
-    def recipe(self, deb_version="1-1", hours_ago=2.0, builds=()):
-        return vp.RecipeEvidence(
-            url="https://code.launchpad.net/~x/+recipe/nekobox",
-            deb_version=deb_version,
-            changed=NOW - timedelta(hours=hours_ago),
-            builds=tuple(builds),
-        )
-
     def source(self, status="Pending", hours_ago=2.0, builds=()):
         return vp.SourceEvidence(
             version="1-1~ubuntu24.04.1",
@@ -192,13 +201,12 @@ class PublicationDecisionTests(unittest.TestCase):
             builds=tuple(builds),
         )
 
-    def classify(self, source=None, builds=(), recipe=None, **kwargs):
+    def classify(self, source=None, builds=(), **kwargs):
         return vp.classify_publication(
             series="noble",
             base_version="1-1",
             source=source,
             builds=builds,
-            recipe=recipe or self.recipe(),
             now=NOW,
             max_pending_hours=24,
             **kwargs,
@@ -224,17 +232,12 @@ class PublicationDecisionTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["build_url"], "https://launchpad.net/build/10")
 
-    def test_failed_recipe_build_is_detected_without_a_source(self):
-        failed = self.build(
-            "Failed to upload",
-            0.5,
-            url="https://launchpad.net/recipebuild/11",
-        )
-        result = self.classify(recipe=self.recipe(builds=(failed,)))
+    def test_deleted_source_publication_is_a_failure(self):
+        deleted = self.source(status="Deleted", builds=())
+        result = self.classify(source=deleted)
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(
-            result["build_url"], "https://launchpad.net/recipebuild/11"
-        )
+        self.assertIn("Deleted", result["detail"])
+        self.assertEqual(result["source_url"], "https://launchpad.net/sourcepub/1")
 
     def test_queued_build_is_pending_not_failure(self):
         queued = self.build("Needs building", 1.0)
@@ -261,6 +264,19 @@ class PublicationDecisionTests(unittest.TestCase):
         result = self.classify(source=self.source(builds=(built,)))
         self.assertEqual(result["status"], "pending")
 
+    def test_pending_source_without_a_build_is_pending_then_stale(self):
+        fresh = self.classify(source=self.source(hours_ago=1.0))
+        self.assertEqual(fresh["status"], "pending")
+        self.assertIn("no build record", fresh["detail"])
+        old = self.classify(source=self.source(hours_ago=30.0))
+        self.assertEqual(old["status"], "stale")
+
+    def test_published_source_without_packages_is_pending(self):
+        published = self.source(status="Published", hours_ago=1.0)
+        result = self.classify(source=published)
+        self.assertEqual(result["status"], "pending")
+        self.assertIn("Packages index", result["detail"])
+
     def test_stale_pending_after_24_hours_is_failure(self):
         old = self.build("Needs building", 30.0)
         result = self.classify(
@@ -276,7 +292,6 @@ class PublicationDecisionTests(unittest.TestCase):
             base_version="1-1",
             source=self.source(hours_ago=30.0, builds=(old,)),
             builds=(),
-            recipe=self.recipe(),
             now=NOW,
             max_pending_hours=0,
         )
@@ -288,52 +303,23 @@ class PublicationDecisionTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("unrecognised", result["detail"])
 
-    def test_recipe_without_a_build_request_is_pending_then_stale(self):
-        pending = self.classify(recipe=self.recipe(hours_ago=1.0))
-        self.assertEqual(pending["status"], "pending")
-        stale = self.classify(recipe=self.recipe(hours_ago=30.0))
-        self.assertEqual(stale["status"], "stale")
-
-    def test_recipe_mismatch_uses_the_pin_age(self):
-        recipe = self.recipe(deb_version="1-0", hours_ago=1.0)
-        recent = self.classify(
-            recipe=recipe, pin_committed=NOW - timedelta(hours=1)
-        )
+    def test_missing_upload_uses_the_pin_age(self):
+        recent = self.classify(pin_committed=NOW - timedelta(hours=1))
         self.assertEqual(recent["status"], "pending")
-        old = self.classify(
-            recipe=recipe, pin_committed=NOW - timedelta(hours=30)
-        )
+        self.assertIn("no Launchpad source upload", recent["detail"])
+        old = self.classify(pin_committed=NOW - timedelta(hours=30))
         self.assertEqual(old["status"], "stale")
-        self.assertIn("never started", old["detail"])
+        self.assertIn("no Launchpad source upload", old["detail"])
 
-    def test_discover_series_rejects_unknown_targets(self):
-        builds = [
-            "https://api.launchpad.net/devel/ubuntu/noble",
-            "https://api.launchpad.net/devel/ubuntu/oracular",
-        ]
-        with self.assertRaises(vp.UsageError):
-            vp.discover_series(builds)
+    def test_missing_upload_without_a_pin_stays_pending(self):
+        result = self.classify()
+        self.assertEqual(result["status"], "pending")
 
-    def test_discover_series_returns_supported_order(self):
-        builds = [
-            "https://api.launchpad.net/devel/ubuntu/stonking",
-            "https://api.launchpad.net/devel/ubuntu/noble",
-            "https://api.launchpad.net/devel/ubuntu/resolute",
-        ]
+    def test_targets_are_explicit_and_ordered(self):
         self.assertEqual(
-            vp.discover_series(builds),
-            ["noble", "resolute", "stonking"],
+            list(vp.KNOWN_SERIES), ["noble", "resolute", "stonking"]
         )
-
-    def test_recipe_deb_version_is_parsed(self):
-        text = (
-            "# git-build-recipe format 0.4 deb-version 5.11.28.3-2~ppa1\n"
-            "# comment\n"
-            "lp:~x/+git/y upstream/5.11.28.3\n"
-        )
-        self.assertEqual(
-            vp.parse_recipe_deb_version(text), "5.11.28.3-2~ppa1"
-        )
+        self.assertEqual(vp.SERIES, ("noble", "resolute", "stonking"))
 
 
 class SourceMetadataTests(unittest.TestCase):
@@ -405,13 +391,13 @@ class FakeBuild:
 
 
 class FakeSource:
-    def __init__(self, version, status, builds):
+    def __init__(self, version, status, builds, url="https://launchpad.net/sourcepub/1"):
         self.source_package_version = version
         self.status = status
         self.date_created = NOW - timedelta(hours=2)
         self.date_made_pending = None
         self.date_published = NOW - timedelta(hours=1)
-        self.web_link = "https://launchpad.net/sourcepub/1"
+        self.web_link = url
         self._builds = builds
 
     def getBuilds(self):
@@ -419,46 +405,41 @@ class FakeSource:
 
 
 class FakeArchive:
-    def __init__(self, sources, builds):
-        self.sources = sources
+    def __init__(self, sources=None, builds=()):
+        self.sources = sources or {}
         self.builds = builds
+        self.status_queries: list[str] = []
 
-    def getPublishedSources(self, **kwargs):
-        return self.sources
+    def getPublishedSources(self, *, status=None, **kwargs):
+        self.status_queries.append(status)
+        return self.sources.get(status, [])
 
     def getBuildRecords(self, **kwargs):
         return self.builds
 
 
-class FakeRecipe:
-    distroseries = ["https://api.launchpad.net/devel/ubuntu/noble"]
-    recipe_text = "# git-build-recipe format 0.4 deb-version 1-1\n"
-    date_last_modified = NOW
-    web_link = "https://code.launchpad.net/~x/+recipe/nekobox"
-    builds = [FakeBuild("Successfully built", "noble")]
-
-
 class FakeLaunchpad:
-    def __init__(self, archive, recipe):
+    def __init__(self, archive):
         self.archive = archive
-        self.recipe = recipe
 
     def load(self, path):
         if path == vp.ARCHIVE:
             return self.archive
-        if path == vp.RECIPE:
-            return self.recipe
         return object()
 
 
 class LaunchpadContextTests(unittest.TestCase):
-    def test_enabled_targets_do_not_come_from_build_history(self):
-        recipe = FakeRecipe()
-        recipe.distroseries = ["https://api.launchpad.net/devel/ubuntu/stonking"]
-        context = vp.LaunchpadContext(FakeLaunchpad(FakeArchive([], []), recipe), 1)
-        self.assertEqual(context.discover_series(), ["stonking"])
+    def context(self, sources=None, builds=()):
+        archive = FakeArchive(sources, builds)
+        return vp.LaunchpadContext(FakeLaunchpad(archive), 1)
 
-    def context(self):
+    def test_targets_are_explicit_not_discovered(self):
+        self.assertEqual(
+            self.context().discover_series(),
+            ["noble", "resolute", "stonking"],
+        )
+
+    def test_context_reads_source_and_build_records_without_recipe(self):
         source = FakeSource(
             "1-1~ubuntu24.04.1",
             "Published",
@@ -469,37 +450,47 @@ class LaunchpadContextTests(unittest.TestCase):
             "Successfully built", "noble", version="1-1~ubuntu24.04.1",
             url="https://launchpad.net/build/2",
         )
-        archive = FakeArchive([source], [archive_build])
-        return vp.LaunchpadContext(
-            FakeLaunchpad(archive, FakeRecipe()), 1
-        )
-
-    def test_context_reads_recipe_and_archive_without_writes(self):
-        context = self.context()
-        self.assertEqual(context.discover_series(), ["noble"])
-        source = context.source_for("noble", "1-1")
-        self.assertIsNotNone(source)
-        self.assertEqual(source.status, "Published")
-        self.assertEqual(len(source.builds), 1)
+        context = self.context({"Published": [source]}, [archive_build])
+        found = context.source_for("noble", "1-1")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.status, "Published")
+        self.assertEqual(len(found.builds), 1)
         builds = context.builds_for("noble", "1-1")
         self.assertEqual(len(builds), 1)
         self.assertEqual(builds[0].url, "https://launchpad.net/build/2")
 
+    def test_pending_source_upload_is_found(self):
+        pending = FakeSource("1-1~ubuntu24.04.1", "Pending", [])
+        context = self.context({"Pending": [pending]})
+        found = context.source_for("noble", "1-1")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.status, "Pending")
+
+    def test_deleted_source_is_exposed_for_a_failure(self):
+        deleted = FakeSource("1-1~ubuntu24.04.1", "Deleted", [])
+        context = self.context({"Deleted": [deleted]})
+        found = context.source_for("noble", "1-1")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.status, "Deleted")
+
     def test_context_ignores_other_versions(self):
-        context = self.context()
+        source = FakeSource("1-1~ubuntu24.04.1", "Published", [])
+        context = self.context({"Published": [source]})
         self.assertIsNone(context.source_for("noble", "2-1"))
         self.assertEqual(context.builds_for("noble", "2-1"), [])
 
+    def test_source_queries_are_status_scoped(self):
+        archive = FakeArchive()
+        context = vp.LaunchpadContext(FakeLaunchpad(archive), 1)
+        self.assertIsNone(context.source_for("noble", "1-1"))
+        self.assertEqual(
+            archive.status_queries,
+            ["Published", "Pending", "Deleted", "Obsolete"],
+        )
+
 
 class FakeContext:
-    recipe = vp.RecipeEvidence(
-        url="https://code.launchpad.net/~x/+recipe/nekobox",
-        deb_version="1-1",
-        changed=NOW,
-        builds=(),
-    )
-
-    def __init__(self, series=("noble",)):
+    def __init__(self, series=("noble", "resolute", "stonking")):
         self.series = list(series)
 
     def discover_series(self):
@@ -558,7 +549,51 @@ class RunTests(unittest.TestCase):
             )
             self.assertFalse(result["ok"], status)
 
-    def test_expect_series_must_match_enabled_recipe(self):
+    def test_result_records_the_explicit_target_set(self):
+        result, written = self.run_with(
+            {"status": "pending", "detail": "waiting"}
+        )
+        self.assertEqual(
+            result["enabled_series"], ["noble", "resolute", "stonking"]
+        )
+        self.assertEqual(written["targets"], written["enabled_series"])
+        self.assertNotIn("recipe", written)
+
+    def test_pin_age_applies_when_verifying_the_pinned_version(self):
+        with tempfile.TemporaryDirectory() as tmp_name:
+            tmp = Path(tmp_name)
+            args = self.run_args(tmp, "--base-version", "1.0-1")
+            with mock.patch.object(
+                vp, "git_commit_time", return_value=NOW
+            ), mock.patch.object(
+                vp, "collect_launchpad_context", return_value=FakeContext()
+            ), mock.patch.object(
+                vp, "verify_series",
+                return_value={"status": "pending", "detail": "waiting"},
+            ) as verify:
+                vp.run(args)
+        self.assertTrue(verify.call_args_list)
+        for call in verify.call_args_list:
+            self.assertEqual(call.args[8], NOW)
+
+    def test_pin_age_does_not_apply_to_another_version(self):
+        with tempfile.TemporaryDirectory() as tmp_name:
+            tmp = Path(tmp_name)
+            args = self.run_args(tmp, "--base-version", "9.9-1")
+            with mock.patch.object(
+                vp, "git_commit_time", return_value=NOW
+            ), mock.patch.object(
+                vp, "collect_launchpad_context", return_value=FakeContext()
+            ), mock.patch.object(
+                vp, "verify_series",
+                return_value={"status": "pending", "detail": "waiting"},
+            ) as verify:
+                vp.run(args)
+        self.assertTrue(verify.call_args_list)
+        for call in verify.call_args_list:
+            self.assertIsNone(call.args[8])
+
+    def test_expect_series_must_match_the_target_set(self):
         with tempfile.TemporaryDirectory() as tmp_name:
             args = self.run_args(
                 Path(tmp_name), "--expect-series", "noble,resolute"
@@ -569,35 +604,21 @@ class RunTests(unittest.TestCase):
                 with self.assertRaises(vp.UsageError):
                     vp.run(args)
 
-    def test_unknown_enabled_series_is_rejected(self):
+    def test_expect_series_accepts_the_full_target_set(self):
+        result, _ = self.run_with(
+            {"status": "pending", "detail": "waiting"},
+            "--expect-series", "noble,resolute,stonking",
+        )
+        self.assertTrue(result["ok"])
+
+    def test_unknown_selected_series_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp_name:
-            args = self.run_args(Path(tmp_name))
+            args = self.run_args(Path(tmp_name), "--series", "oracular")
             with mock.patch.object(
-                vp,
-                "collect_launchpad_context",
-                return_value=FakeContext(("oracular",)),
+                vp, "collect_launchpad_context", return_value=FakeContext()
             ), mock.patch.object(vp, "verify_series", return_value={}):
                 with self.assertRaises(vp.UsageError):
                     vp.run(args)
-
-
-class LaunchpadPublishTests(unittest.TestCase):
-    def test_recipe_code_drops_comments(self):
-        text = """# git-build-recipe format 0.4 deb-version 1
-# comment
-lp:~x/+git/y upstream/1
-nest-part packaging lp:~x/+git/y debian debian main
-"""
-        self.assertEqual(
-            lp.recipe_code(text),
-            "# git-build-recipe format 0.4 deb-version 1\n"
-            "lp:~x/+git/y upstream/1\n"
-            "nest-part packaging lp:~x/+git/y debian debian main\n",
-        )
-
-    def test_version_matches_prefix(self):
-        self.assertTrue(lp.version_matches("1-1~ubuntu24.04.1", "1-1"))
-        self.assertFalse(lp.version_matches("1-2~ubuntu24.04.1", "1-1"))
 
 
 if __name__ == "__main__":

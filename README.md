@@ -2,7 +2,8 @@
 
 Independent packaging for a Launchpad PPA owned by `~oblivionw26`.
 Canonical repository: https://github.com/weixu000/nekobox-ppa
-Launchpad Git is a one-way deployment mirror; make changes on GitHub.
+GitHub stores packaging and automation; Launchpad builds signed source uploads
+and publishes the PPA. No upstream source import into Git is needed.
 Supported: Ubuntu 24.04 LTS (noble), 26.04 LTS (resolute), and 26.10
 (stonking), amd64.
 
@@ -26,17 +27,15 @@ Proxy traffic and desktop integration are not yet tested.
 Bundled license notices are indexed in `debian/third-party/INDEX.txt`;
 remaining provenance uncertainties are recorded in `debian/copyright`.
 PPA: https://launchpad.net/~oblivionw26/+archive/ubuntu/nekobox
-Recipe: https://code.launchpad.net/~oblivionw26/+recipe/nekobox
 Packages are published for all three targets.
-Daily recipe builds are disabled. Launchpad appends a series-specific suffix
-(for example, `~ubuntu26.04.1`) to the recipe's
-base version; bump the base for subsequent packaging uploads.
+Source uploads use a series-specific version suffix (for example,
+`~ubuntu26.04.1`); bump the packaging revision for subsequent packaging uploads.
 
 ## Upstream updates
 
-GitHub Actions checks stable releases daily, validates all enabled Ubuntu
-targets, and deploys passing updates to Launchpad. Pushes to `main` use the same
-validation before updating the mirror; publication is checked every six hours.
+GitHub Actions checks stable releases daily, downloads the pinned source and
+validates all supported Ubuntu targets. It uploads signed source packages;
+Launchpad compiles the official binaries. Publication is checked every six hours.
 No desktop scheduler is required. See
 [UPDATE-WORKFLOW.md](UPDATE-WORKFLOW.md) for validation and publication.
 Run `scripts/check-upstream.py` for a read-only check at any time.

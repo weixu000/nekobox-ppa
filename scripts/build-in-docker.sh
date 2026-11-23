@@ -10,7 +10,8 @@
 #   * --network=none: the build must not reach the network
 #   * full output is captured in build/offline-build.log
 #
-# Requires build/nekobox-<version>/ from scripts/prepare-source.sh.
+# Requires build/nekobox-<version>/ from scripts/prepare-source.sh, or BUILD_TREE
+# naming another prepared source directory below build/.
 set -euo pipefail
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -22,7 +23,11 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$repo_root/upstream.env"
 
 image=${IMAGE:-nekobox-ppa-builder:resolute}
-tree=nekobox-$UPSTREAM_VERSION
+source_tree=$(realpath "${BUILD_TREE:-$repo_root/build/nekobox-$UPSTREAM_VERSION}")
+case "$source_tree" in
+    "$repo_root/build/"*) tree=${source_tree#"$repo_root/build/"} ;;
+    *) die "BUILD_TREE must be inside $repo_root/build/" ;;
+esac
 log=$repo_root/build/offline-build.log
 jobs=${JOBS:-6}
 
@@ -67,4 +72,4 @@ if [ "$rc" -ne 0 ]; then
     exit "$rc"
 fi
 note "build succeeded"
-ls -l "$repo_root/build"/*.deb "$repo_root/build"/*.changes 2>/dev/null || true
+ls -l "$(dirname "$source_tree")"/*.deb "$(dirname "$source_tree")"/*.changes 2>/dev/null || true

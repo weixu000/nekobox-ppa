@@ -1,71 +1,68 @@
 # Stable upstream updates
 
-GitHub is the authoritative repository; Launchpad Git is a one-way build
-mirror. Changes, including imported upstream branches and tags, originate
-on GitHub. The mirror must never overwrite a divergent branch.
+GitHub stores packaging, patches and automation. Upstream release archives are
+downloaded into ignored working directories, not imported into Git.
+Launchpad receives signed Debian source packages, compiles the official binaries
+and publishes the existing [PPA](https://launchpad.net/~oblivionw26/+archive/ubuntu/nekobox).
 
-GitHub Actions owns the scheduled checks; the desktop's OpenChamber scheduler
-is not needed.
+## Release procedure
 
-## GitHub workflows
+GitHub Actions owns daily release discovery and validation; no desktop scheduler
+is needed. See `.github/workflows/upstream-update.yml` for triggers and manual
+modes (`validate`, `auto`, `reconcile`). Manual publication requires `publish=true`.
+`.github/workflows/verify-published.yml` checks publication every six hours.
 
-- `upstream-update.yml`: daily stable-release discovery at 02:00 UTC.
-  Pushes to `main` also validate and mirror the current pin.
-  Manual `validate` builds the current pin without publishing; `auto` checks
-  for a newer stable release; `mirror` validates and reconciles the current pin.
-  Manual writes require `publish=true`. Scheduled runs reconcile a missing
-  mirror/recipe/source submission even if the upstream version is unchanged.
-  Use `mirror` to retry that reconciliation immediately.
-- `verify-published.yml`: publication follow-up every six hours. Launchpad
-  builds and apt publication are asynchronous; a queued upload is not a failure.
+1. Detect a newer stable release with `scripts/check-upstream.py`. Ignore drafts
+   and prereleases; never downgrade. A failed check is not an up-to-date result.
+2. Pin its URL, version and checksum in `upstream.env`, update the changelog and
+   regenerate bundled notices. Review dependency and licence changes.
+3. Download and verify the archive, overlay `debian/`, and build offline for
+   every supported target. Verify both GUI and matching core and run the isolated
+   launcher smoke test.
+4. Assemble a `3.0 (quilt)` source upload for each target. Check its contents,
+   re-extract it, and sign its source metadata and upload manifest.
+5. Only after validation passes, publish the packaging update to GitHub and
+   upload missing source versions to Launchpad. Never upload the test `.deb`
+   binaries: Launchpad builds those itself.
+6. Verify Launchpad build status, source checksums and published binaries.
+   Do not install on the host or change its apt sources.
 
-Use the Actions tab for manual runs and their validation logs. No workflow
-force-pushes the mirror or requests a duplicate already-published version.
+## Versions and retries
 
-Run `scripts/check-upstream.py` with the network proxy from the machine's
-agent instructions. Only non-draft, non-prerelease releases with a unified
-source asset qualify. A failed check is not evidence that no update exists.
+Each Ubuntu series gets a distinct version suffix. Already submitted versions
+are not overwritten; increment the packaging revision for a changed package.
+Launchpad rejects different bytes under an existing source filename. Our uploader
+reuses the archive's orig tarball for an existing upstream version, including its
+compression format, so packaging revisions do not introduce alternate origs.
 
-For a newer candidate:
+Publication is asynchronous. Missing packages may be pending; failed builds and
+states older than 24 hours need investigation. Use the manual `reconcile`
+mode in the update workflow to retry missing submissions without inventing a
+new upstream release.
 
-1. Start from a clean, current `main`; stop if there is concurrent work.
-2. Download the source asset, compute SHA-256 and compare GitHub's asset digest
-   when supplied. Inspect archive paths before extraction. Record the version,
-   URL, hash, top directory and release timestamp in `upstream.env`.
-3. Update `debian/changelog` and the recipe base version together. The recipe's
-   `~ubuntu<version>.1` suffix must sort above the last published package.
-4. Regenerate bundled notices with `scripts/collect-notices.py` and review
-   dependency, build-system and licence changes. A changed dependency or
-   missing notice requires investigation, not an automatic bypass.
-5. Prepare source and run an offline container build for every enabled target.
-   Inspect each `.deb` for the GUI, matching runnable core and notices, and
-   test that its launcher starts the core in an isolated fresh profile.
-6. Prepare the upstream branch with `scripts/prepare-recipe.sh`. Test the
-   actual recipe from a neutral working directory with Launchpad's flags,
-   including `--append-version`, before publishing.
-7. Only after validation passes, commit and push packaging and the new upstream
-   branch/tag to GitHub, then mirror those exact refs to Launchpad.
-   Update the Launchpad recipe text and request builds
-   for the validated target series, using the canonical account API URL.
-8. Verify Launchpad build results and downloaded published binary contents.
-   Record failures for follow-up and notify the user of a published update or
-   a blocker. Do not install packages or change the host's apt sources.
+## Signing and activation
 
-Launchpad daily recipe builds stay disabled: they do not discover upstream
-releases or import new release tarballs. GitHub Actions will own discovery,
-validation and deployment; Launchpad owns source/binary builds and apt
-publication. Scheduled Actions may be delayed.
-GitHub can disable scheduled workflows after 60 days of repository inactivity;
-if that happens, re-enable the workflow in the Actions tab and run it manually.
+Standard source uploads require an OpenPGP signing key registered to the
+Launchpad uploader, separate from Launchpad's PPA repository-signing key.
+Use a key with an encryption subkey: Launchpad sends encrypted
+confirmation mail. Publish the public key to `keyserver.ubuntu.com` and complete
+[key registration](https://launchpad.net/~/+editpgpkeys).
 
-## Deployment credentials
+Configure GitHub Actions secrets:
+- `LP_GPG_PRIVATE_KEY`: armored private upload key.
+- `LP_GPG_PASSPHRASE`: passphrase, if the key is protected.
+- `LP_GPG_KEY_ID`: optional full primary fingerprint guard.
 
-Repository Actions secrets:
+The workflow imports the key into a temporary keyring, checks its Launchpad
+registration before publication, and removes the keyring afterwards. Never put
+credentials in Git, artifacts or logs. Start with manual `validate`; then use
+`reconcile` with publication enabled. Already published versions are skipped, so
+an actual upload is verified on the next new package version.
 
-- `LP_SSH_PRIVATE_KEY`: dedicated key registered with the Launchpad account;
-  used only to push validated refs to the build mirror.
-- `LP_CREDENTIALS`: Launchpad API credential file; used to update the recipe
-  and request builds. Keep the token out of logs and build artifacts.
+The old Git recipe and mirror are no longer part of this release path. Keep
+recipe daily builds disabled. Existing PPA packages and historical Git refs need
+no deletion or history rewrite. The PPA address and users' apt configuration
+stay unchanged. The old SSH/API deployment secrets are not signing credentials.
 
-The workflow's GitHub token needs repository contents write permission only
-for deployment. Pull-request validation must not receive deployment secrets.
+GitHub can disable scheduled workflows after 60 days without repository activity.
+Re-enable the workflow in the Actions tab if needed; scheduled runs may be delayed.
