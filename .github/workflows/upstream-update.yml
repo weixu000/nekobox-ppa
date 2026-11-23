@@ -1,0 +1,575 @@
+name: Upstream release update
+
+# GitHub is canonical; Launchpad is a one-way build mirror.  A scheduled run
+# detects a stable upstream release, prepares the packaging changes, validates
+# every supported series with an offline build plus GUI/core smoke test, then
+# (and only then) pushes the validated refs and requests Launchpad builds.
+#
+# Manual modes:
+#   validate  build and smoke-test the currently pinned source; no writes
+#   auto      detect an update; publish only if "publish" is checked
+#   mirror    validate the current pin, mirror refs (no version bump), and
+#             verify already published artifacts; duplicate builds are skipped
+#
+# The first hosted run should be mode=validate.  Set publish=true to let a
+# manual auto/mirror run write to GitHub and Launchpad.
+#
+# GitHub disables scheduled workflows after 60 days without repository
+# activity.  Re-enable this workflow from the Actions tab if the daily run
+# stops; there is no guaranteed keepalive API.
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # 10:00 Asia/Shanghai
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "validate: no writes; auto: detect update; mirror: current pin"
+        type: choice
+        options:
+          - validate
+          - auto
+          - mirror
+        default: validate
+      publish:
+        description: "Push validated refs to Launchpad and request builds"
+        type: boolean
+        default: false
+      require_published:
+        description: "Fail unless the version is already published for every series"
+        type: boolean
+        default: false
+
+concurrency:
+  group: upstream-update
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      MODE: ${{ github.event_name == 'schedule' && 'auto' || github.event_name == 'push' && 'mirror' || inputs.mode }}
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      update: ${{ steps.plan.outputs.update }}
+      validate: ${{ steps.plan.outputs.validate }}
+      version: ${{ steps.plan.outputs.version }}
+      base_version: ${{ steps.plan.outputs.base_version }}
+      base_sha: ${{ steps.plan.outputs.base_sha }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      series: ${{ steps.plan.outputs.series }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for a newer stable upstream release
+        if: env.MODE == 'auto'
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          scripts/check-upstream.py >build/update-check.json
+
+      - name: Run automation tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Write the plan
+        id: plan
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          Path("build").mkdir(exist_ok=True)
+          with urllib.request.urlopen(
+              "https://api.launchpad.net/devel/~oblivionw26/+recipe/nekobox", timeout=30
+          ) as response:
+              recipe = json.load(response)
+          enabled = sorted(url.rstrip("/").rsplit("/", 1)[-1] for url in recipe["distroseries"])
+          images = {"noble": "ubuntu:24.04", "resolute": "ubuntu:26.04", "stonking": "ubuntu:26.10"}
+          if not enabled or any(series not in images for series in enabled):
+              raise SystemExit(f"Unsupported enabled Launchpad series: {enabled}")
+          env = {}
+          for raw in Path("upstream.env").read_text(encoding="utf-8").splitlines():
+              line = raw.strip()
+              if line and not line.startswith("#") and "=" in line:
+                  key, value = line.split("=", 1)
+                  env[key.strip()] = value.strip()
+
+          current = env["UPSTREAM_VERSION"]
+          update = "false"
+          version = current
+          if mode == "auto":
+              check = json.loads(Path("build/update-check.json").read_text())
+              if check.get("status") == "update-available":
+                  update = "true"
+                  version = check["candidate"]["version"]
+              elif check.get("status") != "up-to-date":
+                  raise SystemExit(f"unexpected check status: {check.get('status')}")
+          base_version = f"{version}-{env['DEBIAN_REVISION']}"
+          validate = "true" if (mode in ("validate", "mirror") or update == "true") else "false"
+          base_sha = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          values = {
+              "mode": mode,
+              "update": update,
+              "validate": validate,
+              "version": version,
+              "base_version": base_version,
+              "base_sha": base_sha,
+              "matrix": json.dumps({"include": [{"series": s, "base": images[s]} for s in enabled]}),
+              "series": ",".join(enabled),
+          }
+          Path("build/plan.json").write_text(json.dumps(values, indent=2) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              for key, value in values.items():
+                  out.write(f"{key}={value}\n")
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a", encoding="utf-8") as out:
+              out.write(f"### Plan\n\n- mode: `{mode}`\n- pinned: `{current}`\n")
+              if update == "true":
+                  out.write(f"- update available: `{version}`\n")
+              else:
+                  out.write("- update available: no\n")
+              out.write(f"- base SHA: `{base_sha}`\n")
+          PY
+
+      - name: Upload the detected release
+        if: steps.plan.outputs.update == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-check
+          path: build/update-check.json
+          if-no-files-found: error
+
+  prepare:
+    name: Prepare packaging changes
+    needs: plan
+    if: needs.plan.outputs.update == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the runner temp directory
+        run: echo "TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
+
+      - name: Download the detected release
+        uses: actions/download-artifact@v4
+        with:
+          name: update-check
+          path: build
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends dpkg-dev fakeroot xz-utils
+
+      - name: Update pinned env, changelog and recipe
+        run: |
+          set -euo pipefail
+          scripts/prepare-update.py --check-json build/update-check.json
+
+      - name: Read the pinned version
+        run: |
+          set -euo pipefail
+          . ./upstream.env
+          echo "UPSTREAM_VERSION=$UPSTREAM_VERSION" >>"$GITHUB_ENV"
+          echo "VERSION=$UPSTREAM_VERSION-$DEBIAN_REVISION" >>"$GITHUB_ENV"
+
+      - name: Prepare the source tree
+        run: |
+          set -euo pipefail
+          scripts/prepare-source.sh
+
+      - name: Regenerate bundled licence notices
+        run: |
+          set -euo pipefail
+          scripts/collect-notices.py --source "build/nekobox-$UPSTREAM_VERSION"
+
+      - name: Verify the notice inventory
+        run: |
+          set -euo pipefail
+          scripts/collect-notices.py --source "build/nekobox-$UPSTREAM_VERSION" --check
+
+      - name: Build the packaging patch
+        run: |
+          set -euo pipefail
+          git add -N -- .
+          git diff --binary >build/update.patch
+          test -s build/update.patch
+          grep -q '^diff --git a/upstream.env ' build/update.patch
+          grep -q '^diff --git a/debian/changelog ' build/update.patch
+          grep -q '^diff --git a/nekobox.recipe ' build/update.patch
+          bad=$(git status --porcelain | sed -E 's/^.. //' | \
+              grep -Ev '^(upstream\.env|debian/changelog|nekobox\.recipe|debian/third-party/)' || true)
+          if [ -n "$bad" ]; then
+              printf 'unexpected changed paths:\n%s\n' "$bad" >&2
+              exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          meta = json.loads(Path("build/release.json").read_text())
+          first = Path("debian/changelog").read_text().splitlines()[0]
+          recipe = Path("nekobox.recipe").read_text().splitlines()[0]
+          assert meta["base_version"] in first, first
+          assert recipe.endswith(meta["base_version"]), recipe
+          print(f"patch for {meta['base_version']} is consistent")
+          PY
+
+      - name: Upload the packaging patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-patch
+          path: |
+            build/update.patch
+            build/release.json
+            build/update-check.json
+          if-no-files-found: error
+
+  validate:
+    name: Validate ${{ matrix.series }}
+    needs: [plan, prepare]
+    if: |
+      always() &&
+      needs.plan.result == 'success' &&
+      needs.plan.outputs.validate == 'true' &&
+      (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    env:
+      JOBS: "3"
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the runner temp directory
+        run: echo "TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
+
+      - name: Download the packaging patch
+        if: needs.plan.outputs.update == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-patch
+          path: build
+
+      - name: Apply the packaging patch
+        if: needs.plan.outputs.update == 'true'
+        run: |
+          set -euo pipefail
+          git apply --binary build/update.patch
+
+      - name: Show the validated version
+        run: |
+          set -euo pipefail
+          . ./upstream.env
+          echo "VERSION=$UPSTREAM_VERSION-$DEBIAN_REVISION" >>"$GITHUB_ENV"
+
+      - name: Prepare the source tree
+        run: |
+          set -euo pipefail
+          scripts/prepare-source.sh
+
+      - name: Offline build and smoke test on ${{ matrix.series }}
+        run: |
+          set -euo pipefail
+          scripts/validate-offline-build.sh \
+            --series "${{ matrix.series }}" \
+            --base "${{ matrix.base }}"
+
+      - name: Record the artifact
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${{ matrix.series }}"
+            for deb in build/nekobox_*.deb; do
+              [ -e "$deb" ] || continue
+              echo "- $(basename "$deb"): $(sha256sum "$deb" | awk '{print $1}')"
+            done
+            echo ""
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the built package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.series }}
+          path: |
+            build/nekobox_*.deb
+            build/nekobox_*.dsc
+            build/nekobox_*.debian.tar.xz
+            build/offline-build.log
+          if-no-files-found: warn
+
+  recipe:
+    name: Validate the Launchpad recipe
+    needs: [plan, prepare]
+    if: |
+      always() &&
+      needs.plan.result == 'success' &&
+      needs.plan.outputs.validate == 'true' &&
+      (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use the runner temp directory
+        run: echo "TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
+
+      - name: Download the packaging patch
+        if: needs.plan.outputs.update == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-patch
+          path: build
+
+      - name: Apply the packaging patch
+        if: needs.plan.outputs.update == 'true'
+        run: |
+          set -euo pipefail
+          git apply --binary build/update.patch
+
+      - name: Install recipe tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            devscripts dpkg-dev fakeroot git-build-recipe xz-utils
+
+      - name: Assemble each series from the recipe
+        run: |
+          set -euo pipefail
+          scripts/validate-recipe.sh --series "${{ needs.plan.outputs.series }}"
+
+  publish:
+    name: Publish or verify the Launchpad mirror
+    needs: [plan, prepare, validate, recipe]
+    if: |
+      always() &&
+      needs.plan.result == 'success' &&
+      needs.validate.result == 'success' &&
+      needs.recipe.result == 'success' &&
+      (needs.plan.outputs.update == 'true' || needs.plan.outputs.mode == 'mirror') &&
+      (github.event_name == 'schedule' || github.event_name == 'push' || inputs.publish == true || inputs.mode == 'mirror') &&
+      needs.plan.outputs.mode != 'validate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: read
+    env:
+      MODE: ${{ needs.plan.outputs.mode }}
+      LP_WRITE: ${{ github.event_name == 'schedule' || github.event_name == 'push' || inputs.publish == true }}
+      LP_PUSH_URL: git+ssh://oblivionw26@git.launchpad.net/~oblivionw26/+git/nekobox-ppa
+      LP_HOST_KEY_FINGERPRINT: SHA256:UNOzlP66WpDuEo34Wgs8mewypV0UzqHLsIFoqwe8dYo
+      VERSION: ${{ needs.plan.outputs.version }}
+      BASE_VERSION: ${{ needs.plan.outputs.base_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Use the runner temp directory
+        run: echo "TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
+
+      - name: Refuse to publish from a moved main
+        run: |
+          set -euo pipefail
+          current=$(git rev-parse HEAD)
+          if [ "$current" != "${{ needs.plan.outputs.base_sha }}" ]; then
+            echo "main moved from ${{ needs.plan.outputs.base_sha }} to $current" >&2
+            exit 1
+          fi
+
+      - name: Download the packaging patch
+        if: needs.plan.outputs.update == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-patch
+          path: build
+
+      - name: Apply the packaging patch
+        if: needs.plan.outputs.update == 'true'
+        run: |
+          set -euo pipefail
+          git apply --binary build/update.patch
+
+      - name: Commit the validated packaging update
+        if: needs.plan.outputs.update == 'true' && env.LP_WRITE == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Update upstream to $VERSION" -m \
+            "Validated on noble, resolute and stonking before publication."
+          git show --stat --oneline HEAD
+
+      - name: Configure the Launchpad SSH identity
+        if: env.LP_WRITE == 'true'
+        env:
+          LP_SSH_PRIVATE_KEY: ${{ secrets.LP_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$LP_SSH_PRIVATE_KEY" ] || { echo "LP_SSH_PRIVATE_KEY is empty" >&2; exit 1; }
+          umask 077
+          key="$RUNNER_TEMP/lp_ed25519"
+          known="$RUNNER_TEMP/lp_known_hosts"
+          printf '%s\n' "$LP_SSH_PRIVATE_KEY" >"$key"
+          chmod 600 "$key"
+          keyscan=$(ssh-keyscan -t rsa git.launchpad.net 2>/dev/null) \
+            || { echo "ssh-keyscan failed" >&2; exit 1; }
+          fingerprint=$(printf '%s\n' "$keyscan" | ssh-keygen -lf - -E sha256 | awk '{print $2}')
+          if [ "$fingerprint" != "$LP_HOST_KEY_FINGERPRINT" ]; then
+            echo "Launchpad host key fingerprint mismatch" >&2
+            exit 1
+          fi
+          printf '%s\n' "$keyscan" >"$known"
+          chmod 600 "$known"
+          ssh_command="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known -o StrictHostKeyChecking=yes"
+          export GIT_SSH_COMMAND="$ssh_command"
+          echo "GIT_SSH_COMMAND=$ssh_command" >>"$GITHUB_ENV"
+          git ls-remote "$LP_PUSH_URL" HEAD >/dev/null
+
+      - name: Push main to the canonical GitHub repository
+        if: needs.plan.outputs.update == 'true' && env.LP_WRITE == 'true'
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
+
+      - name: Prepare and mirror the upstream refs
+        if: env.LP_WRITE == 'true'
+        run: |
+          set -euo pipefail
+          scripts/prepare-recipe.sh \
+            --output-dir "$GITHUB_WORKSPACE/build/recipe"
+          stage="$GITHUB_WORKSPACE/build/recipe/nekobox-ppa"
+          refspecs=(
+            "refs/heads/upstream/$VERSION:refs/heads/upstream/$VERSION"
+            "refs/tags/upstream/$VERSION:refs/tags/upstream/$VERSION"
+          )
+
+          # Mirror the upstream branch/tag to GitHub first, using the token
+          # configuration actions/checkout put in the main repository.
+          extra=$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader || true)
+          if [ -z "$extra" ]; then
+            echo "no GitHub token header available for the staging repository" >&2
+            exit 1
+          fi
+          git -C "$stage" config http.https://github.com/.extraheader "$extra"
+          git -C "$stage" config http.postBuffer 524288000
+          git -C "$stage" remote add github "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$stage" push github "${refspecs[@]}"
+
+          # Then mirror to Launchpad.  Never force: a diverged mirror must be
+          # resolved deliberately, not overwritten.
+          git -C "$stage" remote add launchpad "$LP_PUSH_URL"
+          git -C "$stage" push launchpad "${refspecs[@]}"
+
+          git push "$LP_PUSH_URL" HEAD:main
+
+      - name: Install the Launchpad client
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends python3-launchpadlib
+          python3 - <<'PY'
+          import launchpadlib
+          print("launchpadlib", getattr(launchpadlib, "__version__", "unknown"))
+          PY
+
+      - name: Update the recipe and request builds
+        env:
+          LP_CREDENTIALS: ${{ secrets.LP_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          args=(--mode "$MODE" --version "$VERSION" --base-version "$BASE_VERSION" --series "${{ needs.plan.outputs.series }}" --json build/lp-publish.json)
+          if [ "$LP_WRITE" = "true" ]; then
+            [ -n "$LP_CREDENTIALS" ] || { echo "LP_CREDENTIALS is empty" >&2; exit 1; }
+            umask 077
+            creds="$RUNNER_TEMP/lp.credentials"
+            printf '%s' "$LP_CREDENTIALS" >"$creds"
+            chmod 600 "$creds"
+            trap 'rm -f "$creds"' EXIT
+            export LP_CREDENTIALS_FILE="$creds"
+            export LP_APPLICATION_NAME="nekobox-ppa-ci"
+            BROWSER=/bin/false python3 scripts/launchpad-publish.py \
+              "${args[@]}" --application-name "$LP_APPLICATION_NAME"
+          else
+            python3 scripts/launchpad-publish.py "${args[@]}" --dry-run
+          fi
+
+      - name: Verify the published artifacts
+        run: |
+          set -euo pipefail
+          args=(--base-version "$BASE_VERSION" --json build/published-verification.json --summary build/published-verification.md)
+          if [ "${{ inputs.require_published }}" = "true" ]; then
+            args+=(--require-published)
+          fi
+          python3 scripts/verify-published.py "${args[@]}"
+
+      - name: Publish the run summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f build/published-verification.md ]; then
+            cat build/published-verification.md >>"$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f build/lp-publish.json ]; then
+            python3 - <<'PY' >>"$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          data = json.loads(Path("build/lp-publish.json").read_text())
+          print("\n### Launchpad\n")
+          print(f"- recipe updated: `{data.get('recipe_updated')}`")
+          for series, entry in data.get("series", {}).items():
+              detail = entry.get("build") or entry.get("published_version") or entry.get("buildstate", "")
+              print(f"- {series}: `{entry.get('action')}` {detail}")
+          PY
+          fi
+
+      - name: Upload publication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication
+          path: |
+            build/lp-publish.json
+            build/published-verification.json
+            build/published-verification.md
+            build/recipe/MANIFEST
+          if-no-files-found: warn
