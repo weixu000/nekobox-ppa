@@ -40,6 +40,8 @@ Launchpad daily recipe builds stay disabled: they do not discover upstream
 releases or import new release tarballs. GitHub Actions will own discovery,
 validation and deployment; Launchpad will own source/binary builds and apt
 publication. Scheduled Actions may be delayed.
+GitHub can disable scheduled workflows after 60 days of repository inactivity;
+if that happens, re-enable the workflow in the Actions tab and run it manually.
 
 ## Deployment credentials
 

@@ -129,7 +129,9 @@ actual=$(sha256sum "$tarball" | awk '{ print $1 }')
     || die "sha256 mismatch for $tarball: expected $UPSTREAM_SHA256, got $actual"
 
 # ----------------------------------------------------------------- extract ---
-tmp=$(mktemp -d "${TMPDIR:-/tmp/opencode}/nekobox-recipe.XXXXXX")
+tmp_parent=${TMPDIR:-/tmp/opencode}
+mkdir -p "$tmp_parent"
+tmp=$(mktemp -d "$tmp_parent/nekobox-recipe.XXXXXX")
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 
