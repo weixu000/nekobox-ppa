@@ -23,7 +23,7 @@
 #      branches.
 #
 # Commits are made only in the staging repository, with the packaging identity
-# Oblivion W <oblivion.w23@gmail.com>. Nothing is pushed and the outer
+# Xu Wei <18422432+weixu000@users.noreply.github.com>. Nothing is pushed and the outer
 # repository is not modified. Push commands are printed for later use.
 set -euo pipefail
 
@@ -50,8 +50,8 @@ source_branch=upstream/$UPSTREAM_VERSION
 packaging_branch=main
 recipe_version=$UPSTREAM_VERSION-$DEBIAN_REVISION
 recipe=$repo_root/nekobox.recipe
-ident_name='Oblivion W'
-ident_email='oblivion.w23@gmail.com'
+ident_name='Xu Wei'
+ident_email='18422432+weixu000@users.noreply.github.com'
 
 refresh=0
 output_dir=$repo_root/build/recipe-upstream
