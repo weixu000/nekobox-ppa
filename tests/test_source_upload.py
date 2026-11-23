@@ -10,6 +10,7 @@ dpkg-buildpackage is unavailable.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -21,6 +22,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -53,6 +55,125 @@ class FreshApiTests(unittest.TestCase):
             result = su.fetch_json("https://api.launchpad.net/devel/~owner/gpg_keys", 10)
         self.assertEqual(result["entries"][0]["fingerprint"], "registered")
         self.assertEqual(requests[0].get_header("Cache-control"), "no-cache")
+
+
+class NetworkRetryTests(unittest.TestCase):
+    """The PPA front end can answer 503 for minutes, so retries must be patient."""
+
+    URL = ("https://ppa.launchpadcontent.net/oblivionw26/nekobox/ubuntu/"
+           "dists/noble/main/source/Sources.gz")
+    DELAYS = [5.0, 15.0, 30.0, 60.0, 120.0]
+
+    def http_error(self, code: int):
+        fp = io.BytesIO(b"backend unavailable")
+        error = urllib.error.HTTPError(self.URL, code, "error", {}, fp)
+        return error, fp
+
+    def patched(self, errors, sleeps, log):
+        return (
+            mock.patch.object(su.urllib.request, "urlopen",
+                              side_effect=list(errors)),
+            mock.patch.object(su.time, "sleep", side_effect=sleeps.append),
+            contextlib.redirect_stderr(log),
+        )
+
+    def test_repeated_503_is_retried_then_succeeds(self):
+        failures = [self.http_error(503) for _ in range(3)]
+        response = mock.MagicMock()
+        sleeps: list[float] = []
+        log = io.StringIO()
+        urlopen, sleep, stderr = self.patched(
+            [error for error, _ in failures] + [response], sleeps, log
+        )
+        with urlopen as opened, sleep, stderr:
+            self.assertIs(su._open(self.URL, 10), response)
+        self.assertEqual(opened.call_count, 4)
+        self.assertEqual(sleeps, self.DELAYS[:3])
+        for _, fp in failures:
+            self.assertTrue(fp.closed, "failed HTTP response was left open")
+        text = log.getvalue()
+        for attempt, delay in enumerate(self.DELAYS[:3], start=1):
+            self.assertIn(
+                f"warning: {self.URL}: attempt {attempt}/6 failed "
+                f"(HTTP 503); retrying in {delay:g}s",
+                text,
+            )
+
+    def test_503_exhaustion_reports_the_attempt_count(self):
+        failures = [self.http_error(503) for _ in range(6)]
+        sleeps: list[float] = []
+        log = io.StringIO()
+        urlopen, sleep, stderr = self.patched(
+            [error for error, _ in failures], sleeps, log
+        )
+        with urlopen as opened, sleep, stderr:
+            with self.assertRaises(su.NetworkError) as caught:
+                su._open(self.URL, 10)
+        self.assertEqual(opened.call_count, 6)
+        self.assertEqual(sleeps, self.DELAYS)
+        self.assertIn("after 6 attempts: HTTP 503", str(caught.exception))
+        for _, fp in failures:
+            self.assertTrue(fp.closed, "failed HTTP response was left open")
+
+    def test_client_error_is_not_retried(self):
+        error, fp = self.http_error(403)
+        sleeps: list[float] = []
+        log = io.StringIO()
+        urlopen, sleep, stderr = self.patched([error], sleeps, log)
+        with urlopen as opened, sleep, stderr:
+            with self.assertRaises(su.NetworkError):
+                su._open(self.URL, 10)
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(sleeps, [])
+        self.assertEqual(log.getvalue(), "")
+        self.assertTrue(fp.closed)
+
+    def test_missing_url_keeps_immediate_404_semantics(self):
+        error, _ = self.http_error(404)
+        sleeps: list[float] = []
+        log = io.StringIO()
+        urlopen, sleep, stderr = self.patched([error], sleeps, log)
+        with urlopen as opened, sleep, stderr:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                su._open(self.URL, 10)
+        self.assertEqual(caught.exception.code, 404)
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(sleeps, [])
+
+    def test_download_still_returns_false_for_404(self):
+        error, _ = self.http_error(404)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            destination = Path(tmpdir) / "Sources.gz"
+            with mock.patch.object(su.urllib.request, "urlopen", side_effect=[error]), \
+                    mock.patch.object(su.time, "sleep"):
+                self.assertFalse(su.download(self.URL, destination, 10))
+            self.assertFalse(destination.exists())
+
+    def test_network_timeout_is_retried_then_reported(self):
+        timeouts = [urllib.error.URLError(TimeoutError("timed out"))
+                    for _ in range(2)]
+        response = mock.MagicMock()
+        sleeps: list[float] = []
+        log = io.StringIO()
+        urlopen, sleep, stderr = self.patched(timeouts + [response], sleeps, log)
+        with urlopen as opened, sleep, stderr:
+            self.assertIs(su._open(self.URL, 10), response)
+        self.assertEqual(opened.call_count, 3)
+        self.assertEqual(sleeps, self.DELAYS[:2])
+        self.assertIn("attempt 1/6 failed (timed out); retrying in 5s",
+                      log.getvalue())
+
+        sleeps = []
+        log = io.StringIO()
+        urlopen, sleep, stderr = self.patched(
+            [urllib.error.URLError(TimeoutError("timed out"))] * 6, sleeps, log
+        )
+        with urlopen as opened, sleep, stderr:
+            with self.assertRaises(su.NetworkError) as caught:
+                su._open(self.URL, 10)
+        self.assertEqual(opened.call_count, 6)
+        self.assertEqual(sleeps, self.DELAYS)
+        self.assertIn("after 6 attempts: timed out", str(caught.exception))
 
 
 ENV_TEXT = """# pinned release

@@ -373,7 +373,7 @@ jobs:
       (github.event_name == 'schedule' || github.event_name == 'push' || inputs.publish == true || inputs.mode == 'reconcile') &&
       needs.plan.outputs.mode != 'validate'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: write
       actions: read

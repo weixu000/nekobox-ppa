@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 import unittest
 import urllib.error
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -214,110 +217,199 @@ def http_error(code):
     )
 
 
+@dataclass
+class FetchOutcome:
+    """A mocked fetch call, with its sleeps and stderr captured."""
+
+    destination: Path
+    opened: mock.Mock
+    sleep: mock.Mock
+    stderr: str
+    result: bool | None = None
+    error: Exception | None = None
+
+
 class FetchTests(unittest.TestCase):
-    def fetch(self, tmp, side_effect):
+    def fetch(self, tmp, side_effect, sleeps=None):
+        """Run fetch with real waits replaced and stderr captured.
+
+        ``sleeps``, when given, records ``(delay, stderr so far)`` at each
+        wait, which shows whether the diagnostic was written first.
+        """
         destination = Path(tmp) / "index.gz"
+        stderr = io.StringIO()
+        sleep = mock.Mock()
+        if sleeps is not None:
+            sleep.side_effect = lambda delay: sleeps.append(
+                (delay, stderr.getvalue())
+            )
         with mock.patch.object(
             vp.urllib.request, "urlopen", side_effect=side_effect
-        ) as opened, mock.patch.object(vp.time, "sleep") as slept:
-            result = vp.fetch("https://example.test/x", destination, 5)
-        return result, destination, opened, slept
+        ) as opened, mock.patch.object(vp.time, "sleep", sleep), \
+                contextlib.redirect_stderr(stderr):
+            try:
+                result = vp.fetch("https://example.test/x", destination, 5)
+                error = None
+            except vp.NetworkError as exc:
+                result, error = None, exc
+        return FetchOutcome(
+            destination=destination,
+            opened=opened,
+            sleep=sleep,
+            stderr=stderr.getvalue(),
+            result=result,
+            error=error,
+        )
+
+    def test_retry_schedule_is_generous_and_bounded(self):
+        # A 503 can last minutes behind the archive front end, where short
+        # bursts only add load without ever reaching a working back end.
+        self.assertEqual(
+            vp.RETRY_DELAYS, (5.0, 15.0, 30.0, 60.0, 120.0)
+        )
 
     def test_retries_503_then_succeeds(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result, destination, opened, slept = self.fetch(
+            outcome = self.fetch(
                 tmp, [http_error(503), FakeResponse(b"fresh index")]
             )
-            self.assertTrue(result)
-            self.assertEqual(destination.read_bytes(), b"fresh index")
-            self.assertFalse(
-                destination.with_name(destination.name + ".part").exists()
+            self.assertTrue(outcome.result)
+            self.assertEqual(
+                outcome.destination.read_bytes(), b"fresh index"
             )
-            self.assertEqual(opened.call_count, 2)
-            slept.assert_called_once_with(vp.RETRY_DELAYS[0])
+            self.assertFalse(
+                outcome.destination.with_name(
+                    outcome.destination.name + ".part"
+                ).exists()
+            )
+            self.assertEqual(outcome.opened.call_count, 2)
+            self.assertEqual(
+                outcome.sleep.call_args_list, [mock.call(5.0)]
+            )
+            lines = outcome.stderr.splitlines()
+            self.assertEqual(len(lines), 1)
+            for fragment in (
+                "https://example.test/x",
+                "HTTP 503",
+                "attempt 1/6",
+                "retrying in 5s",
+            ):
+                self.assertIn(fragment, lines[0])
 
     def test_retries_each_transient_status(self):
         for code in (500, 502, 503, 504):
             with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
-                result, _, opened, _ = self.fetch(
-                    tmp, [http_error(code), FakeResponse()]
-                )
-                self.assertTrue(result)
-                self.assertEqual(opened.call_count, 2)
+                outcome = self.fetch(tmp, [http_error(code), FakeResponse()])
+                self.assertTrue(outcome.result)
+                self.assertEqual(outcome.opened.call_count, 2)
+                self.assertIn(f"HTTP {code}", outcome.stderr)
 
     def test_retries_timeout_then_succeeds(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result, _, opened, slept = self.fetch(
+            outcome = self.fetch(
                 tmp, [TimeoutError("timed out"), FakeResponse()]
             )
-            self.assertTrue(result)
-            self.assertEqual(opened.call_count, 2)
-            slept.assert_called_once_with(vp.RETRY_DELAYS[0])
+            self.assertTrue(outcome.result)
+            self.assertEqual(outcome.opened.call_count, 2)
+            self.assertEqual(
+                outcome.sleep.call_args_list, [mock.call(5.0)]
+            )
+            self.assertIn("timed out", outcome.stderr)
 
     def test_exhausted_transient_retries_fail(self):
         attempts = len(vp.RETRY_DELAYS) + 1
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(vp.NetworkError) as caught:
-                self.fetch(tmp, [http_error(503)] * attempts)
-            self.assertIn(f"after {attempts} attempts", str(caught.exception))
-            self.assertIn("HTTP 503", str(caught.exception))
+            outcome = self.fetch(tmp, [http_error(503)] * attempts)
+            self.assertIsInstance(outcome.error, vp.NetworkError)
+            self.assertIn(
+                f"after {attempts} attempts", str(outcome.error)
+            )
+            self.assertIn("HTTP 503", str(outcome.error))
+            self.assertEqual(outcome.opened.call_count, attempts)
+            self.assertEqual(
+                outcome.sleep.call_args_list,
+                [mock.call(delay) for delay in vp.RETRY_DELAYS],
+            )
+            # No wait follows the final attempt, so only the retries report.
+            self.assertEqual(
+                len(outcome.stderr.splitlines()), len(vp.RETRY_DELAYS)
+            )
+
+    def test_diagnostic_precedes_each_wait(self):
+        sleeps = []
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome = self.fetch(
+                tmp,
+                [http_error(503)] * len(vp.RETRY_DELAYS) + [FakeResponse()],
+                sleeps=sleeps,
+            )
+        self.assertTrue(outcome.result)
+        self.assertEqual(
+            [delay for delay, _ in sleeps], list(vp.RETRY_DELAYS)
+        )
+        for index, (delay, seen) in enumerate(sleeps):
+            lines = seen.splitlines()
+            self.assertEqual(len(lines), index + 1)
+            self.assertIn(
+                f"attempt {index + 1}/{len(vp.RETRY_DELAYS) + 1}",
+                lines[-1],
+            )
+            self.assertIn(f"retrying in {delay:g}s", lines[-1])
 
     def test_retries_connection_reset_after_a_partial_write(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result, destination, opened, slept = self.fetch(
+            outcome = self.fetch(
                 tmp, [BrokenResponse(), FakeResponse(b"complete")]
             )
-            self.assertTrue(result)
-            self.assertEqual(destination.read_bytes(), b"complete")
+            self.assertTrue(outcome.result)
+            self.assertEqual(outcome.destination.read_bytes(), b"complete")
             self.assertFalse(
-                destination.with_name(destination.name + ".part").exists()
+                outcome.destination.with_name(
+                    outcome.destination.name + ".part"
+                ).exists()
             )
-            self.assertEqual(opened.call_count, 2)
-            slept.assert_called_once_with(vp.RETRY_DELAYS[0])
+            self.assertEqual(outcome.opened.call_count, 2)
+            self.assertEqual(
+                outcome.sleep.call_args_list, [mock.call(5.0)]
+            )
 
     def test_exhausted_retries_leave_no_partial_file(self):
         attempts = len(vp.RETRY_DELAYS) + 1
         with tempfile.TemporaryDirectory() as tmp:
-            destination = Path(tmp) / "index.gz"
-            with mock.patch.object(
-                vp.urllib.request,
-                "urlopen",
-                side_effect=[BrokenResponse() for _ in range(attempts)],
-            ), mock.patch.object(vp.time, "sleep"):
-                with self.assertRaises(vp.NetworkError) as caught:
-                    vp.fetch("https://example.test/x", destination, 5)
-            self.assertIn("connection reset", str(caught.exception))
-            self.assertFalse(destination.exists())
+            outcome = self.fetch(
+                tmp, [BrokenResponse() for _ in range(attempts)]
+            )
+            self.assertIsInstance(outcome.error, vp.NetworkError)
+            self.assertIn("connection reset", str(outcome.error))
+            self.assertFalse(outcome.destination.exists())
             self.assertFalse(
-                destination.with_name(destination.name + ".part").exists()
+                outcome.destination.with_name(
+                    outcome.destination.name + ".part"
+                ).exists()
             )
 
     def test_404_is_pending_and_not_retried(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result, destination, opened, slept = self.fetch(
-                tmp, http_error(404)
-            )
-            self.assertFalse(result)
-            self.assertFalse(destination.exists())
-            self.assertEqual(opened.call_count, 1)
-            slept.assert_not_called()
+            outcome = self.fetch(tmp, http_error(404))
+            self.assertFalse(outcome.result)
+            self.assertFalse(outcome.destination.exists())
+            self.assertEqual(outcome.opened.call_count, 1)
+            outcome.sleep.assert_not_called()
+            self.assertEqual(outcome.stderr, "")
 
     def test_non_transient_http_error_is_not_retried(self):
         with tempfile.TemporaryDirectory() as tmp:
-            destination = Path(tmp) / "index.gz"
-            with mock.patch.object(
-                vp.urllib.request, "urlopen", side_effect=http_error(403)
-            ) as opened, mock.patch.object(vp.time, "sleep") as slept:
-                with self.assertRaises(vp.NetworkError) as caught:
-                    vp.fetch("https://example.test/x", destination, 5)
-            self.assertIn("HTTP 403", str(caught.exception))
-            self.assertEqual(opened.call_count, 1)
-            slept.assert_not_called()
+            outcome = self.fetch(tmp, http_error(403))
+            self.assertIsInstance(outcome.error, vp.NetworkError)
+            self.assertIn("HTTP 403", str(outcome.error))
+            self.assertEqual(outcome.opened.call_count, 1)
+            outcome.sleep.assert_not_called()
+            self.assertEqual(outcome.stderr, "")
 
     def test_requests_a_fresh_copy_without_cachebusting(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _, _, opened, _ = self.fetch(tmp, [FakeResponse()])
-        request = opened.call_args.args[0]
+            outcome = self.fetch(tmp, [FakeResponse()])
+        request = outcome.opened.call_args.args[0]
         headers = {
             key.lower(): value for key, value in request.header_items()
         }

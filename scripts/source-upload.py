@@ -283,6 +283,23 @@ def tree_manifest(root: Path) -> str:
 # network
 # --------------------------------------------------------------------------
 
+# The PPA front end can answer 503 for minutes while no back end is available,
+# so a short burst of retries only adds noise.  RETRY_DELAYS holds the pause
+# before each retry, so its length plus one is the total attempt count.
+TRANSIENT_HTTP_STATUSES = frozenset({500, 502, 503, 504})
+RETRY_DELAYS = (5.0, 15.0, 30.0, 60.0, 120.0)
+
+
+def _report_retry(url: str, attempt: int, reason: str) -> None:
+    delay = RETRY_DELAYS[attempt]
+    print(
+        f"warning: {url}: attempt {attempt + 1}/{len(RETRY_DELAYS) + 1} failed "
+        f"({reason}); retrying in {delay:g}s",
+        file=sys.stderr,
+        flush=True,
+    )
+    time.sleep(delay)
+
 
 def _open(url: str, timeout: float):
     # Upload decisions and key registration must reflect current server state,
@@ -296,26 +313,26 @@ def _open(url: str, timeout: float):
             "Cache-Control": "no-cache",
         }
     )
-    last_error: Exception | None = None
-    for attempt in range(4):
+    attempts = len(RETRY_DELAYS) + 1
+    last_reason = ""
+    for attempt in range(attempts):
         try:
             return urllib.request.urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as exc:
-            if exc.code == 404:
+            code = exc.code
+            exc.close()
+            if code == 404:
                 raise
-            if exc.code in (500, 502, 503, 504) and attempt < 3:
-                last_error = exc
-                time.sleep(2 ** attempt)
-                continue
-            raise NetworkError(f"HTTP {exc.code} fetching {url}") from exc
+            if code not in TRANSIENT_HTTP_STATUSES:
+                raise NetworkError(f"HTTP {code} fetching {url}") from exc
+            last_reason = f"HTTP {code}"
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            last_error = exc
-            if attempt < 3:
-                time.sleep(2 ** attempt)
-                continue
-            reason = getattr(exc, "reason", exc)
-            raise NetworkError(f"cannot fetch {url}: {reason}") from exc
-    raise NetworkError(f"cannot fetch {url}: {last_error}")
+            last_reason = str(getattr(exc, "reason", exc))
+        if attempt + 1 < attempts:
+            _report_retry(url, attempt, last_reason)
+    raise NetworkError(
+        f"cannot fetch {url} after {attempts} attempts: {last_reason}"
+    )
 
 
 def fetch_json(url: str, timeout: float) -> Any:

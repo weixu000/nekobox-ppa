@@ -79,8 +79,12 @@ DEFAULT_MAX_PENDING_HOURS = 24.0
 
 # PPA indexes are mutable and may be served through a cache. Retry transient
 # GET failures and request fresh responses without changing archive URLs.
+# Delays are deliberately generous: the archive front end can answer 503 for
+# minutes while no back end is available, so a short burst of retries only
+# adds noise.  RETRY_DELAYS holds the pause before each retry, so its length
+# plus one is the total attempt count.
 TRANSIENT_HTTP_STATUSES = frozenset({500, 502, 503, 504})
-RETRY_DELAYS = (1.0, 2.0, 4.0)
+RETRY_DELAYS = (5.0, 15.0, 30.0, 60.0, 120.0)
 FETCH_HEADERS = {
     "User-Agent": "nekobox-ppa-verify-published/3",
     "Cache-Control": "no-cache",
@@ -547,8 +551,10 @@ def fetch(url: str, destination: Path, timeout: float) -> bool:
     """Download an idempotent URL, retrying transient server/network errors.
 
     A 404 still means "not published yet" and is returned as False without a
-    retry.  Non-transient HTTP errors fail immediately.  Checksum validation
-    happens after this function returns and is not retried here.
+    retry.  Non-transient HTTP errors fail immediately, and a checksum mismatch
+    is rejected by the caller without a retry.  Before each wait the retry is
+    reported on stderr with the URL, failure, attempt and delay, so a slow
+    scheduled run explains itself in the job log.
     """
     request = urllib.request.Request(url, headers=FETCH_HEADERS)
     attempts = len(RETRY_DELAYS) + 1
@@ -560,7 +566,14 @@ def fetch(url: str, destination: Path, timeout: float) -> bool:
             last_reason = str(exc)
             if attempt + 1 >= attempts:
                 break
-            time.sleep(RETRY_DELAYS[attempt])
+            delay = RETRY_DELAYS[attempt]
+            print(
+                f"warning: {url}: attempt {attempt + 1}/{attempts} failed "
+                f"({last_reason}); retrying in {delay:g}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
     raise NetworkError(
         f"cannot fetch {url} after {attempts} attempts: {last_reason}"
     )
