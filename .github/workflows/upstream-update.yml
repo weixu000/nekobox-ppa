@@ -77,6 +77,8 @@ jobs:
 
       - name: Check for a newer stable upstream release
         if: env.MODE == 'auto'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p build

@@ -32,9 +32,8 @@ downloading the tarball, compute its SHA-256 and check it against the
 release's published checksum before changing upstream.env.  A candidate with
 no digest is still a valid discovery result.
 
-No credentials are read and no authenticated GitHub requests are made.
-Unauthenticated API requests are rate limited; a daily check is well within
-that limit.
+GH_TOKEN, when provided, authenticates requests only to https://api.github.com.
+This avoids shared-runner unauthenticated rate limits in GitHub Actions.
 """
 
 from __future__ import annotations
@@ -42,6 +41,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import os
 import re
 import subprocess
 import sys
@@ -252,6 +252,16 @@ def source_asset(release: dict[str, Any], version: str) -> dict[str, Any] | None
 # --------------------------------------------------------------------------
 
 
+class GitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urlparse(newurl)
+        if req.has_header("Authorization") and (
+            target.scheme != "https" or target.netloc != "api.github.com"
+        ):
+            raise NetworkError("refusing an authenticated redirect outside the GitHub API")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_json(url: str, timeout: float, retries: int) -> Any:
     request = urllib.request.Request(
         url,
@@ -261,10 +271,14 @@ def fetch_json(url: str, timeout: float, retries: int) -> Any:
             "User-Agent": USER_AGENT,
         },
     )
+    target = urllib.parse.urlparse(url)
+    token = os.environ.get("GH_TOKEN")
+    if token and target.scheme == "https" and target.netloc == "api.github.com":
+        request.add_header("Authorization", f"Bearer {token}")
     last_error = ""
     for attempt in range(retries + 1):
         try:
-            opener = urllib.request.build_opener()
+            opener = urllib.request.build_opener(GitHubRedirectHandler())
             with opener.open(request, timeout=timeout) as response:
                 data = response.read(MAX_RESPONSE_BYTES + 1)
                 charset = response.headers.get_content_charset() or "utf-8"
