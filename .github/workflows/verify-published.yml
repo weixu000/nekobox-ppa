@@ -9,9 +9,8 @@ name: Verify published PPA artifacts
 # older than 24 hours is reported as stale.
 #
 # The targets are defined explicitly in scripts/verify-published.py (noble,
-# resolute, stonking); the legacy Launchpad git recipe is not consulted.
-# EXPECTED_SERIES below guards that the workflow and the script agree on the
-# target set.
+# resolute, stonking). EXPECTED_SERIES below guards that the workflow and the
+# script agree on the target set.
 #
 # It verifies the strong digest(s) present in each series' Packages index
 # (stonking currently supplies SHA512 but no SHA256), checks the published

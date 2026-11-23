@@ -1,9 +1,8 @@
 nekobox (5.11.28.3-3~ppa1) resolute; urgency=medium
 
-  * Packaging-only revision: the PPA is now built from signed 3.0 (quilt)
-    Debian source uploads assembled by scripts/source-upload.py, replacing the
-    retired Launchpad Git recipe. No upstream change; the pinned 5.11.28.3
-    release tarball and its checksum are unchanged.
+  * Packaging-only revision: the PPA is built from signed 3.0 (quilt) Debian
+    source uploads assembled by scripts/source-upload.py. No upstream change;
+    the pinned 5.11.28.3 release tarball and its checksum are unchanged.
   * Each series appends its own suffix (~ubuntu24.04.1, ~ubuntu26.04.1,
     ~ubuntu26.10.1) to this revision, so noble, resolute and stonking are
     published from one packaging tree with distinct, ordered versions.
@@ -13,8 +12,7 @@ nekobox (5.11.28.3-3~ppa1) resolute; urgency=medium
 nekobox (5.11.28.3-2~ppa1) resolute; urgency=medium
 
   * Independent packaging for a personal Launchpad PPA, built from the pinned
-    upstream 5.11.28.3 unified-source release tarball rather than from another
-    PPA's packaging history.
+    upstream 5.11.28.3 unified-source release tarball.
   * Ship the GUI and the sing-box based core in one binary package, installed
     under /usr/libexec/Iblis so both always match.
   * Do not install upstream's /usr/bin/sing-box wrapper, which would conflict

@@ -57,9 +57,6 @@ class PrepareUpdateTests(unittest.TestCase):
             self.assertIn(f"{key}={value}", updated)
         self.assertIn("DEBIAN_REVISION=2~ppa1", updated)
 
-    def test_recipe_helper_is_gone(self):
-        self.assertFalse(hasattr(pu, "update_recipe_text"))
-
     def test_changelog_prepend_and_version(self):
         old = "nekobox (5.11.28.3-2~ppa1) resolute; urgency=medium\n\n -- X <x@y>  date\n"
         new = pu.prepend_changelog(
@@ -170,59 +167,6 @@ class PrepareUpdateTests(unittest.TestCase):
             changelog = (repo / "debian" / "changelog").read_text()
             self.assertTrue(
                 changelog.startswith("nekobox (5.11.28.4-2~ppa1) resolute;")
-            )
-            self.assertFalse(
-                (repo / "nekobox.recipe").exists(),
-                "prepare-update must not require or create a recipe",
-            )
-
-    def test_legacy_recipe_is_not_modified(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            (repo / "debian").mkdir()
-            (repo / "downloads").mkdir()
-            (repo / "upstream.env").write_text(ENV_TEXT, encoding="utf-8")
-            legacy = "# git-build-recipe format 0.4 deb-version 5.11.28.3-2~ppa1\n"
-            (repo / "nekobox.recipe").write_text(legacy, encoding="utf-8")
-            (repo / "debian" / "changelog").write_text(
-                "nekobox (5.11.28.3-2~ppa1) resolute; urgency=medium\n\n"
-                " -- Oblivion W <oblivion.w23@gmail.com>  Fri, 20 Nov 2026 20:56:07 +0800\n",
-                encoding="utf-8",
-            )
-            tarball = repo / "downloads" / "nekobox-unified-source-5.11.28.4.tar.xz"
-            with tarfile.open(tarball, "w:xz") as archive:
-                payload = b"hello\n"
-                info = tarfile.TarInfo("nekobox-unified-source-5.11.28.4/README")
-                info.size = len(payload)
-                archive.addfile(info, io.BytesIO(payload))
-            digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
-            check = {
-                "schema_version": 1,
-                "status": "update-available",
-                "current": {"version": "5.11.28.3"},
-                "candidate": {
-                    "version": "5.11.28.4",
-                    "asset_name": "nekobox-unified-source-5.11.28.4.tar.xz",
-                    "asset_url": (
-                        "https://github.com/qr243vbi/nekobox/releases/download/"
-                        "5.11.28.4/nekobox-unified-source-5.11.28.4.tar.xz"
-                    ),
-                    "digest": "sha256:" + digest,
-                    "size": tarball.stat().st_size,
-                    "released_at": "2026-09-01T00:00:00Z",
-                },
-            }
-            check_path = repo / "check.json"
-            check_path.write_text(json.dumps(check), encoding="utf-8")
-            rc = pu.main([
-                "--check-json", str(check_path),
-                "--repo-root", str(repo),
-                "--tarball", str(tarball),
-                "--metadata", str(repo / "build" / "release.json"),
-            ])
-            self.assertEqual(rc, 0)
-            self.assertEqual(
-                (repo / "nekobox.recipe").read_text(encoding="utf-8"), legacy
             )
 
 

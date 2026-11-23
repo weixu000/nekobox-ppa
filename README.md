@@ -3,12 +3,12 @@
 Independent packaging for a Launchpad PPA owned by `~oblivionw26`.
 Canonical repository: https://github.com/weixu000/nekobox-ppa
 GitHub stores packaging and automation; Launchpad builds signed source uploads
-and publishes the PPA. No upstream source import into Git is needed.
+and publishes the PPA.
 Supported: Ubuntu 24.04 LTS (noble), 26.04 LTS (resolute), and 26.10
 (stonking), amd64.
 
 Source comes from the pinned [upstream release](https://github.com/qr243vbi/nekobox/releases)
-recorded in `upstream.env`, not the existing PPA's Git history.
+recorded in `upstream.env`.
 
 Before publishing: verify a complete offline source build, that the resulting
 package owns both GUI and core, and that both executables run.

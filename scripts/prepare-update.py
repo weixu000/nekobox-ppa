@@ -9,9 +9,9 @@ This is the deterministic first step of the GitHub Actions release pipeline:
   3. inspect the archive members without extracting them;
   4. update upstream.env and debian/changelog together.
 
-The old Launchpad git recipe is no longer an active input: publication uses
-signed source uploads (scripts/source-upload.py), so this step has no recipe
-to rewrite.  The packaging-only repository remains the source of debian/.
+Publication uses signed source uploads (scripts/source-upload.py); this step
+only updates upstream.env and debian/changelog.  The packaging repository
+remains the source of debian/.
 
 It does not commit, push, build, or regenerate licence notices.  The workflow
 runs scripts/prepare-source.sh and scripts/collect-notices.py afterwards, then

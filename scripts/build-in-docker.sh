@@ -4,8 +4,8 @@
 # Usage: scripts/build-in-docker.sh [extra dpkg-buildpackage arguments]
 #
 # Properties, on purpose:
-#   * only the project's build/ directory is mounted (at /build); the repo,
-#     the host home and reference/ are not visible to the container
+#   * only the project's build/ directory is mounted (at /build); the repo and
+#     the host home are not visible to the container
 #   * the container runs with the caller's UID/GID, HOME=/tmp is writable
 #   * --network=none: the build must not reach the network
 #   * full output is captured in build/offline-build.log

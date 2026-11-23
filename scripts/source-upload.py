@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Prepare, sign and upload NekoBox source packages to the Launchpad PPA.
 
-The PPA used to be built from a Launchpad git recipe.  It now receives normal
-signed Debian source uploads:
+The PPA receives normal signed Debian source uploads:
 
   1. ``plan`` checks the PPA for each series and decides which per-series
      versions still need an upload.  If the upstream version already exists,
@@ -71,7 +70,7 @@ API_BASE = "https://api.launchpad.net/devel"
 DPUT_TARGET = f"ppa:{PPA_OWNER}/{PPA_NAME}"
 
 # Deliberately explicit: a new series needs a base image and the version suffix
-# that Launchpad recipe builds used before this migration.
+# used for that series.
 SERIES: dict[str, dict[str, str]] = {
     "noble": {"base": "ubuntu:24.04", "suffix": "~ubuntu24.04.1"},
     "resolute": {"base": "ubuntu:26.04", "suffix": "~ubuntu26.04.1"},

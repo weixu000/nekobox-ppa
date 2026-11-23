@@ -1,7 +1,7 @@
 # Stable upstream updates
 
 GitHub stores packaging, patches and automation. Upstream release archives are
-downloaded into ignored working directories, not imported into Git.
+downloaded into ignored working directories.
 Launchpad receives signed Debian source packages, compiles the official binaries
 and publishes the existing [PPA](https://launchpad.net/~oblivionw26/+archive/ubuntu/nekobox).
 
@@ -59,10 +59,8 @@ credentials in Git, artifacts or logs. Start with manual `validate`; then use
 `reconcile` with publication enabled. Already published versions are skipped, so
 an actual upload is verified on the next new package version.
 
-The old Git recipe and mirror are no longer part of this release path. Keep
-recipe daily builds disabled. Existing PPA packages and historical Git refs need
-no deletion or history rewrite. The PPA address and users' apt configuration
-stay unchanged. The old SSH/API deployment secrets are not signing credentials.
+Uploads go to the existing PPA address, so users' apt configuration does not
+change.
 
 GitHub can disable scheduled workflows after 60 days without repository activity.
 Re-enable the workflow in the Actions tab if needed; scheduled runs may be delayed.

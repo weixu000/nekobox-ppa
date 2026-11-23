@@ -583,7 +583,7 @@ class LaunchpadContextTests(unittest.TestCase):
             ["noble", "resolute", "stonking"],
         )
 
-    def test_context_reads_source_and_build_records_without_recipe(self):
+    def test_context_reads_source_and_build_records(self):
         source = FakeSource(
             "1-1~ubuntu24.04.1",
             "Published",
@@ -701,7 +701,6 @@ class RunTests(unittest.TestCase):
             result["enabled_series"], ["noble", "resolute", "stonking"]
         )
         self.assertEqual(written["targets"], written["enabled_series"])
-        self.assertNotIn("recipe", written)
 
     def test_pin_age_applies_when_verifying_the_pinned_version(self):
         with tempfile.TemporaryDirectory() as tmp_name:

@@ -29,8 +29,7 @@
 #      prove it is complete (debian/ and upstream sources both present).
 #
 # Only the pinned release (or the explicitly supplied archived orig) is used
-# as source. reference/ is a comparison clone and is never read by this script.
-# No binary package is built here.
+# as source. No binary package is built here.
 set -euo pipefail
 
 umask 022

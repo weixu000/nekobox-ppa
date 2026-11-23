@@ -2,8 +2,8 @@
 """Verify the NekoBox binary and source published in the Launchpad PPA.
 
 The PPA's Packages and Sources indexes are the authority.  The supported
-targets are defined here explicitly (noble, resolute, stonking); the verifier
-does not read the legacy Launchpad git recipe.  For each target this script:
+targets are defined here explicitly (noble, resolute, stonking).  For each
+target this script:
 
   * downloads dists/<series>/main/binary-amd64/Packages.gz;
   * finds the published version derived from the current upstream.env pin;
@@ -66,8 +66,7 @@ MAX_DOWNLOAD = 512 * 1024 * 1024
 STRONG_DIGESTS = ("SHA256", "SHA512")
 
 # The supported build targets, in publication order.  A new Launchpad target
-# must be added here deliberately; nothing is discovered from the legacy git
-# recipe.
+# must be added here deliberately; nothing is discovered automatically.
 KNOWN_SERIES: dict[str, dict[str, str]] = {
     "noble": {"base": "ubuntu:24.04", "suffix": "~ubuntu24.04.1"},
     "resolute": {"base": "ubuntu:26.04", "suffix": "~ubuntu26.04.1"},
@@ -1266,8 +1265,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "max_pending_hours": args.max_pending_hours,
         "ok": not failed and not (pending and args.require_published),
         "series": selected,
-        # enabled_series is kept for workflow compatibility; it is now the
-        # explicit supported target set, not a Launchpad recipe setting.
+        # enabled_series is kept for workflow compatibility and mirrors the
+        # explicit supported target set.
         "enabled_series": enabled,
         "targets": enabled,
         "results": results,

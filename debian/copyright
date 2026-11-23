@@ -24,7 +24,7 @@ Comment: Scope and evidence.
  than 4 KiB, so a text named below as ".../LICENSE" may be installed as
  ".../LICENSE.gz". INDEX.txt records the uncompressed names.
  .
- Parts of the source tarball that this recipe does not compile are not
+ Parts of the source tarball that this package does not compile are not
  itemised here: core/updater/ (SKIP_UPDATER=ON; no updater executable is
  installed), src/3rdparty/lmdbxx/ (MIGRATE_LMDB=OFF) and the test suites
  (except cpr/test, noted below because its licence differs from cpr's root
