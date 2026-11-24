@@ -10,7 +10,7 @@ and publishes the existing [PPA](https://launchpad.net/~oblivionw26/+archive/ubu
 GitHub Actions owns daily release discovery and validation; no desktop scheduler
 is needed. See `.github/workflows/upstream-update.yml` for triggers and manual
 modes (`validate`, `auto`, `reconcile`). Manual publication requires `publish=true`.
-`.github/workflows/verify-published.yml` checks publication every six hours.
+`.github/workflows/verify-published.yml` checks publication daily.
 
 1. Detect a newer stable release with `scripts/check-upstream.py`. Ignore drafts
    and prereleases; never downgrade. A failed check is not an up-to-date result.

@@ -35,7 +35,7 @@ Source uploads use a series-specific version suffix (for example,
 
 GitHub Actions checks stable releases daily, downloads the pinned source and
 validates all supported Ubuntu targets. It uploads signed source packages;
-Launchpad compiles the official binaries. Publication is checked every six hours.
+Launchpad compiles the official binaries. Publication is checked daily.
 No desktop scheduler is required. See
 [UPDATE-WORKFLOW.md](UPDATE-WORKFLOW.md) for validation and publication.
 Run `scripts/check-upstream.py` for a read-only check at any time.

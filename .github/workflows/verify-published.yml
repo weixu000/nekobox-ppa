@@ -24,7 +24,7 @@ name: Verify published PPA artifacts
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 6 * * *" # 14:00 Asia/Shanghai
   workflow_dispatch:
     inputs:
       version:
