@@ -165,7 +165,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: update-check
-          retention-days: 7
+          retention-days: 3
           path: build/update-check.json
           if-no-files-found: error
 
@@ -250,7 +250,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-patch
-          retention-days: 7
+          retention-days: 3
           path: |
             build/update.patch
             build/release.json
@@ -322,7 +322,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: source-identity-${{ matrix.series }}
-          retention-days: 7
+          retention-days: 3
           path: build/upload/${{ matrix.series }}/prepare.json
           if-no-files-found: error
 
@@ -352,7 +352,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-diagnostics-${{ matrix.series }}
-          retention-days: 7
+          retention-days: 3
           path: |
             build/upload/${{ matrix.series }}/*.dsc
             build/upload/${{ matrix.series }}/*_source.changes
@@ -579,7 +579,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: publication
-          retention-days: 7
+          retention-days: 3
           path: |
             build/upload-plan.json
             build/upload/*/upload.json
