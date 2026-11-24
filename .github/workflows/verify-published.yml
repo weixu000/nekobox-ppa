@@ -145,6 +145,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: published-verification
+          retention-days: 7
           path: |
             build/published-verification.json
             build/published-verification.md
@@ -229,5 +230,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: published-smoke-${{ matrix.series }}
+          retention-days: 7
           path: build/smoke-${{ matrix.series }}.log
           if-no-files-found: ignore
